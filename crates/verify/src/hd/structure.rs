@@ -86,7 +86,7 @@ impl<L: FpBackend> ThetaStructureDim4<L> {
     /// point is exactly fixed by `PI`; when it is, its squared-theta vector is
     /// too, since the Hadamard transform commutes with `PI`.
     pub fn precompute_symmetric(&mut self) -> bool {
-        use crate::hd::two_point::{exactly_fixed_by_pi, inverses_of_symmetric};
+        use crate::hd::two_point::{exactly_fixed_by_pi, hadamard_symmetric, inverses_of_symmetric};
         if self.precomputed {
             return true;
         }
@@ -94,8 +94,8 @@ impl<L: FpBackend> ThetaStructureDim4<L> {
             return self.precompute();
         }
         let o = self.null_point.coords();
-        let mut hso = o.clone();
-        to_squared_theta_assign(&mut hso);
+        let sq: [Fp2<L>; N] = core::array::from_fn(|a| o[a].sqr());
+        let hso = hadamard_symmetric(&sq);
         let suitable = o.iter().all(|c| !bool::from(c.ct_is_zero()))
             && hso.iter().all(|c| !bool::from(c.ct_is_zero()));
         if !suitable {

@@ -159,6 +159,17 @@ impl<L: FpBackend> IsogenyDim4<L> {
         to_squared_theta_assign(&mut h1);
         let h2: [Fp2<L>; N] = core::array::from_fn(|a| h0[PI[a]].clone());
         let h3: [Fp2<L>; N] = core::array::from_fn(|a| h1[PI[a]].clone());
+        if let Some((dual_null, inv_dual_null)) = codomain_dual_null_direct(&h0, &h1) {
+            let codomain_null = ThetaPointDim4::new(
+                crate::hd::two_point::hadamard_symmetric(&dual_null),
+            );
+            return Some(Self {
+                codomain: ThetaStructureDim4::new(codomain_null),
+                inv_dual_null,
+                dual_null_zero: [false; N],
+                has_zero_dual: false,
+            });
+        }
         let hsk = [h0, h1, h2, h3];
         let (dual_null, inv_dual_null, dual_null_zero, has_zero_dual) =
             match codomain_dual_null_symmetric(&hsk) {
@@ -280,6 +291,60 @@ fn codomain_dual_null_projective<L: FpBackend>(
     let others_den = crate::hd::field::products_of_others(&p_den);
     let o: [Fp2<L>; N] = core::array::from_fn(|j| p_num[j].mul(&others_den[j]));
     let w = crate::hd::field::products_of_others(&o);
+    Some((o, w))
+}
+
+/// The inverse dual null point of the codomain, directly from the squared-theta
+/// vectors `h0`, `h1` of the two pushed kernel points, as products along a
+/// fixed path through the ten orbit representatives of `PI`: the formula of
+/// MIKE's reference implementation (`solve_HIIP_weil`), carried over to our
+/// indexing by the relabeling of index bits 0 -> 2, 1 -> 3, 2 -> 1, 3 -> 0,
+/// which conjugates MIKE's permutation to `PI` and its kernel directions to
+/// ours. About 26 multiplications. It uses the symmetry of the dual null point
+/// (the paper's Proposition 5) without checking it, as the two-point chain
+/// relies on Theorem 2. Returns `(O, 1/O)` up to scalars, the dual null point
+/// by a ten-term pseudo-inversion; `None` if a coordinate vanishes, in which
+/// case the caller falls back to the checked computation.
+fn codomain_dual_null_direct<L: FpBackend>(
+    h0: &[Fp2<L>; N],
+    h1: &[Fp2<L>; N],
+) -> Option<([Fp2<L>; N], [Fp2<L>; N])> {
+    let r1 = h0[3].clone();
+    let r2 = r1.mul(&h0[9]);
+    let r3 = r2.mul(&h1[8]);
+    let r4 = r3.mul(&h0[10]);
+    let r5 = r4.mul(&h0[14]);
+    let r6 = r5.mul(&h1[15]);
+    let r7 = r6.mul(&h1[7]);
+    let r8 = r7.mul(&h0[5]);
+    let b8 = h0[0].clone();
+    let b7 = b8.mul(&h0[4]);
+    let b6 = b7.mul(&h1[5]);
+    let b5 = b6.mul(&h1[13]);
+    let b4 = b5.mul(&h0[15]);
+    let b3 = b4.mul(&h0[11]);
+    let b2 = b3.mul(&h1[10]);
+    let b1 = b2.mul(&h0[8]);
+    let m0 = r8.mul(&h0[1]);
+    let m12 = h0[2].mul(&h0[9]).mul(&b2);
+    let m5 = r1.mul(&b1);
+    let m1 = r2.mul(&b2);
+    let m9 = r3.mul(&b3);
+    let m11 = r4.mul(&b4);
+    let m15 = r5.mul(&b5);
+    let m14 = r6.mul(&b6);
+    let m6 = r7.mul(&b7);
+    let m4 = r8.mul(&b8);
+    let w: [Fp2<L>; N] = [
+        m0.clone(), m4.clone(), m1.clone(), m12.clone(), m4.clone(), m6.clone(), m5.clone(), m14.clone(), m1.clone(), m5.clone(), m9.clone(), m11.clone(), m12.clone(), m14.clone(), m11.clone(), m15.clone(),
+    ];
+    if w.iter().any(|x| bool::from(x.ct_is_zero())) {
+        return None;
+    }
+    let o = crate::hd::two_point::inverses_of_symmetric(&w);
+    if o.iter().any(|x| bool::from(x.ct_is_zero())) {
+        return None;
+    }
     Some((o, w))
 }
 

@@ -67,6 +67,44 @@ pub(crate) fn inverses_of_symmetric<L: FpBackend>(
     core::array::from_fn(|a| inv[PI_REP_INDEX[a]].clone())
 }
 
+/// The Hadamard transform of a vector fixed by [`PI`], in 34 additions
+/// instead of 64: the transform of MIKE's reference implementation for vectors
+/// fixed by its own coordinate permutation, which is conjugate to [`PI`] by the
+/// exchange of index bits 2 and 3 (the Hadamard transform being invariant under
+/// relabeling of index bits). The result is again fixed by [`PI`]. Only valid
+/// for exactly fixed inputs; callers check.
+pub(crate) fn hadamard_symmetric<L: FpBackend>(
+    x: &[Fp2<L>; THETA_DIM4_N],
+) -> [Fp2<L>; THETA_DIM4_N] {
+    const IN: [usize; 10] = [0, 1, 2, 3, 9, 10, 11, 5, 7, 15];
+    const OUT: [usize; THETA_DIM4_N] = [0, 1, 2, 3, 1, 7, 4, 8, 2, 4, 5, 6, 3, 8, 6, 9];
+    let z: [&Fp2<L>; 10] = core::array::from_fn(|i| &x[IN[i]]);
+    let (t0, t1) = (z[0].add(z[9]), z[0].sub(z[9]));
+    let (t2, t3) = (z[5].add(z[7]), z[5].sub(z[7]));
+    let (t4, t5) = (z[2].add(z[8]), z[2].sub(z[8]));
+    let (t6, t7) = (z[1].add(z[6]), z[1].sub(z[6]));
+    let (t8, t9) = (z[3].add(z[4]), z[3].sub(z[4]));
+    let (s0, s1) = (t0.add(&t2), t0.sub(&t2));
+    let (s2, s3) = (t1.add(&t3), t1.sub(&t3));
+    let (s4, s5) = (t6.add(&t4), t6.sub(&t4));
+    let (r0, r1, r2) = (t5.add(&t5), t7.add(&t7), t9.add(&t9));
+    let (r3, r4, r5) = (t8.add(&t8), s4.add(&s4), s5.add(&s5));
+    let (u0, u1) = (s0.add(&r3), s0.sub(&r3));
+    let o: [Fp2<L>; 10] = [
+        u0.add(&r4),
+        s2.add(&r0),
+        s3.add(&r1),
+        s1.add(&r2),
+        s1.sub(&r2),
+        u1.add(&r5),
+        s2.sub(&r0),
+        u1.sub(&r5),
+        s3.sub(&r1),
+        u0.sub(&r4),
+    ];
+    core::array::from_fn(|a| o[OUT[a]].clone())
+}
+
 /// Whether `x` is exactly fixed by [`PI`].
 pub(crate) fn exactly_fixed_by_pi<L: FpBackend>(x: &[Fp2<L>; THETA_DIM4_N]) -> bool {
     PI_PAIRS.iter().all(|&(a, b)| bool::from(x[a].ct_equal(&x[b])))
@@ -195,6 +233,7 @@ pub fn run_strategy_chain_two_point_prof<L: FpBackend, P: Profiler>(
     let mut kernel_elements: Vec<[ThetaPointDim4<L>; 2]> = vec![basis.clone()];
     let mut cur = start.clone();
     let mut cur_ready = cur.precompute();
+    let mut cur_pending = false;
 
     let mut kernels: Vec<[ThetaPointDim4<L>; 4]> = Vec::with_capacity(l);
     let mut codomains: Vec<ThetaPointDim4<L>> = Vec::with_capacity(l);
@@ -204,7 +243,14 @@ pub fn run_strategy_chain_two_point_prof<L: FpBackend, P: Profiler>(
         let mut prev: u32 = level.iter().sum();
         let target = (l - 1 - k) as u32;
         let t0 = prof.now();
+        let mut t_pre = 0;
         while prev != target {
+            if cur_pending {
+                let tp = prof.now();
+                cur_ready = cur.precompute_symmetric();
+                cur_pending = false;
+                t_pre += prof.now() - tp;
+            }
             if !cur_ready {
                 return None;
             }
@@ -223,7 +269,8 @@ pub fn run_strategy_chain_two_point_prof<L: FpBackend, P: Profiler>(
             strat_idx += 1;
         }
         let t1 = prof.now();
-        prof.add(SLOT_PLAIN_PUSHES, t1 - t0);
+        prof.add(SLOT_PLAIN_PUSHES, t1 - t0 - t_pre);
+        prof.add(SLOT_PLAIN_CODOMAIN, t_pre);
 
         // The descended top-of-stack pair gives the order-8 kernel of this step.
         let ker = kernel_from_pair(kernel_elements.last().expect("non-empty kernel stack"));
@@ -252,7 +299,10 @@ pub fn run_strategy_chain_two_point_prof<L: FpBackend, P: Profiler>(
         let t3 = prof.now();
         prof.add(SLOT_PLAIN_PUSHES, t3 - t2);
         cur = iso.into_codomain();
-        cur_ready = cur.precompute_symmetric();
+        // The doubling constants of the codomain are computed only when a
+        // doubling follows (as in MIKE's reference implementation): after most
+        // steps, the next kernel pair is already of the right order.
+        cur_pending = true;
         prof.add(SLOT_PLAIN_CODOMAIN, prof.now() - t3);
     }
 
