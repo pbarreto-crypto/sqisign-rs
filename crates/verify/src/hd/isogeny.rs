@@ -143,6 +143,40 @@ impl<L: FpBackend> IsogenyDim4<L> {
         true
     }
 
+    /// [`Self::from_kernel`] for a kernel `[K0, K1, PI(K0), PI(K1)]` of the
+    /// two-point verifier, the third and fourth points being exact coordinate
+    /// permutations of the first two. Squaring and the Hadamard transform
+    /// commute with `PI`, so two of the four squared-theta vectors are
+    /// permutations of the other two, which gives bit-identical results. The
+    /// codomain's dual null point, fixed by `PI` (the paper's Proposition 5),
+    /// is computed on the ten orbit representatives, with a check that falls
+    /// back to the full computation.
+    pub fn from_kernel_pi_paired(k8: &[ThetaPointDim4<L>; 4]) -> Option<Self> {
+        use crate::hd::two_point::PI;
+        let mut h0 = k8[0].coords().clone();
+        to_squared_theta_assign(&mut h0);
+        let mut h1 = k8[1].coords().clone();
+        to_squared_theta_assign(&mut h1);
+        let h2: [Fp2<L>; N] = core::array::from_fn(|a| h0[PI[a]].clone());
+        let h3: [Fp2<L>; N] = core::array::from_fn(|a| h1[PI[a]].clone());
+        let hsk = [h0, h1, h2, h3];
+        let (dual_null, inv_dual_null, dual_null_zero, has_zero_dual) =
+            match codomain_dual_null_symmetric(&hsk) {
+                Some((o, w)) => (o, w, [false; N], false),
+                None => match codomain_dual_null_projective(&hsk) {
+                    Some((o, w)) => (o, w, [false; N], false),
+                    None => codomain_dual_null_and_inverse(&hsk, &[1, 2, 4, 8])?,
+                },
+            };
+        let codomain_null = ThetaPointDim4::new(hadamard(&dual_null));
+        Some(Self {
+            codomain: ThetaStructureDim4::new(codomain_null),
+            inv_dual_null,
+            dual_null_zero,
+            has_zero_dual,
+        })
+    }
+
     /// The codomain structure, moved out (the chain continues on it).
     #[inline]
     pub fn into_codomain(self) -> ThetaStructureDim4<L> {
@@ -181,7 +215,7 @@ pub fn apply_plain_image<L: FpBackend>(
 /// The plain step's dual null `O` and weights `1/O` from the spanning tree of the 4-cube, up
 /// to common scalars (products, no inversion); `None` when no root spans it or a `p_num` is zero.
 #[allow(clippy::type_complexity)]
-fn codomain_dual_null_projective<L: FpBackend>(
+fn dual_null_tree<L: FpBackend>(
     hsk: &[[Fp2<L>; N]; 4],
 ) -> Option<([Fp2<L>; N], [Fp2<L>; N])> {
     let dirs = [1usize, 2, 4, 8];
@@ -230,14 +264,49 @@ fn codomain_dual_null_projective<L: FpBackend>(
         if p_num.iter().any(|x| bool::from(x.ct_is_zero())) {
             return None;
         }
-        // O = p_num (.) others(p_den), and 1/O up to a scalar is others(O) itself:
-        // 42 products in place of others(p_num) and the 16 products with p_den.
-        let others_den = crate::hd::field::products_of_others(&p_den);
-        let o: [Fp2<L>; N] = core::array::from_fn(|j| p_num[j].mul(&others_den[j]));
-        let w = crate::hd::field::products_of_others(&o);
-        return Some((o, w));
+        return Some((p_num, p_den));
     }
     None
+}
+
+/// The dual null point `O` of the codomain and a vector proportional to its
+/// inverse, from the squared-theta kernel coordinates `hsk`, without
+/// inversions: `None` if a coordinate is zero. `O = p_num (.) others(p_den)`,
+/// and `1/O` up to a scalar is `others(O)` itself.
+fn codomain_dual_null_projective<L: FpBackend>(
+    hsk: &[[Fp2<L>; N]; 4],
+) -> Option<([Fp2<L>; N], [Fp2<L>; N])> {
+    let (p_num, p_den) = dual_null_tree(hsk)?;
+    let others_den = crate::hd::field::products_of_others(&p_den);
+    let o: [Fp2<L>; N] = core::array::from_fn(|j| p_num[j].mul(&others_den[j]));
+    let w = crate::hd::field::products_of_others(&o);
+    Some((o, w))
+}
+
+/// [`codomain_dual_null_projective`] for a codomain whose dual null point is
+/// fixed by `PI` (the paper's Proposition 5): `O` is computed on the ten orbit
+/// representatives and copied to the partners. The symmetry is checked, not
+/// assumed: for each pair `(a, PI[a])`, `O[a]` and `O[PI[a]]` are compared
+/// through one cross-multiplication of the tree's numerators and
+/// denominators, and any mismatch returns `None`, so that the caller falls
+/// back to the full computation.
+fn codomain_dual_null_symmetric<L: FpBackend>(
+    hsk: &[[Fp2<L>; N]; 4],
+) -> Option<([Fp2<L>; N], [Fp2<L>; N])> {
+    use crate::hd::two_point::{PI_PAIRS, PI_REPS, PI_REP_INDEX};
+    let (p_num, p_den) = dual_null_tree(hsk)?;
+    for &(a, b) in PI_PAIRS.iter() {
+        if !bool::from(p_num[a].mul(&p_den[b]).ct_equal(&p_num[b].mul(&p_den[a]))) {
+            return None;
+        }
+    }
+    let den: [Fp2<L>; 10] = core::array::from_fn(|i| p_den[PI_REPS[i]].clone());
+    let others_den = crate::hd::field::products_of_others(&den);
+    let o_reps: [Fp2<L>; 10] = core::array::from_fn(|i| p_num[PI_REPS[i]].mul(&others_den[i]));
+    let w_reps = crate::hd::field::products_of_others(&o_reps);
+    let o = core::array::from_fn(|a| o_reps[PI_REP_INDEX[a]].clone());
+    let w = core::array::from_fn(|a| w_reps[PI_REP_INDEX[a]].clone());
+    Some((o, w))
 }
 
 /// Reconstruct a codomain dual theta null point `O` from kernel points'

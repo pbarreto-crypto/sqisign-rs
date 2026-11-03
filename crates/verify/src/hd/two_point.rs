@@ -48,6 +48,30 @@ pub fn permute_pi<L: FpBackend>(p: &ThetaPointDim4<L>) -> ThetaPointDim4<L> {
 /// The fixed points of [`PI`].
 pub const PI_FIXED: [usize; 4] = [0, 5, 10, 15];
 
+/// One index from each orbit of [`PI`]: the four fixed indices and the smaller
+/// index of each of the six pairs.
+pub const PI_REPS: [usize; 10] = [0, 1, 2, 3, 5, 6, 7, 10, 11, 15];
+
+/// For each index, the position in [`PI_REPS`] of its orbit's representative.
+pub const PI_REP_INDEX: [usize; THETA_DIM4_N] = [0, 1, 2, 3, 1, 4, 5, 6, 2, 5, 7, 8, 3, 6, 8, 9];
+
+/// For a vector `x` fixed by [`PI`] (`x[PI[a]] == x[a]` for all `a`), a vector
+/// proportional to `(1 / x[a])_a`, computed on the ten orbit representatives:
+/// the products of the other representatives, copied to the partners. Used
+/// where the paper's Proposition 5 makes a null-point vector symmetric.
+pub(crate) fn inverses_of_symmetric<L: FpBackend>(
+    x: &[Fp2<L>; THETA_DIM4_N],
+) -> [Fp2<L>; THETA_DIM4_N] {
+    let reps: [Fp2<L>; 10] = core::array::from_fn(|i| x[PI_REPS[i]].clone());
+    let inv = crate::hd::field::products_of_others(&reps);
+    core::array::from_fn(|a| inv[PI_REP_INDEX[a]].clone())
+}
+
+/// Whether `x` is exactly fixed by [`PI`].
+pub(crate) fn exactly_fixed_by_pi<L: FpBackend>(x: &[Fp2<L>; THETA_DIM4_N]) -> bool {
+    PI_PAIRS.iter().all(|&(a, b)| bool::from(x[a].ct_equal(&x[b])))
+}
+
 /// Whether `o` is fixed by [`PI`] projectively, that is `o[PI[a]] = t o[a]`
 /// for all `a` and one `t`, in six comparisons: with a reference pair
 /// `(k0, PI[k0])`, `o[a] * o[PI[k0]] == o[PI[a]] * o[k0]` for each of the
@@ -203,7 +227,7 @@ pub fn run_strategy_chain_two_point_prof<L: FpBackend, P: Profiler>(
 
         // The descended top-of-stack pair gives the order-8 kernel of this step.
         let ker = kernel_from_pair(kernel_elements.last().expect("non-empty kernel stack"));
-        let iso = IsogenyDim4::from_kernel(&ker)?;
+        let iso = IsogenyDim4::from_kernel_pi_paired(&ker)?;
         let t2 = prof.now();
         prof.add(SLOT_PLAIN_CODOMAIN, t2 - t1);
         debug_assert!(
@@ -228,7 +252,7 @@ pub fn run_strategy_chain_two_point_prof<L: FpBackend, P: Profiler>(
         let t3 = prof.now();
         prof.add(SLOT_PLAIN_PUSHES, t3 - t2);
         cur = iso.into_codomain();
-        cur_ready = cur.precompute();
+        cur_ready = cur.precompute_symmetric();
         prof.add(SLOT_PLAIN_CODOMAIN, prof.now() - t3);
     }
 

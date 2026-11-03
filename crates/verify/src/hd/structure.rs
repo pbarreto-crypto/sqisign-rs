@@ -80,6 +80,33 @@ impl<L: FpBackend> ThetaStructureDim4<L> {
     ///
     /// Returns `false` (and leaves the structure un-precomputed) if the
     /// structure does not support doubling (see [`Self::has_suitable_doubling`]).
+    /// [`Self::precompute`] for a null point fixed by `PI` (the paper's
+    /// Proposition 5): the two inverse vectors are computed on the ten orbit
+    /// representatives. Falls back to [`Self::precompute`] unless the null
+    /// point is exactly fixed by `PI`; when it is, its squared-theta vector is
+    /// too, since the Hadamard transform commutes with `PI`.
+    pub fn precompute_symmetric(&mut self) -> bool {
+        use crate::hd::two_point::{exactly_fixed_by_pi, inverses_of_symmetric};
+        if self.precomputed {
+            return true;
+        }
+        if !exactly_fixed_by_pi(self.null_point.coords()) {
+            return self.precompute();
+        }
+        let o = self.null_point.coords();
+        let mut hso = o.clone();
+        to_squared_theta_assign(&mut hso);
+        let suitable = o.iter().all(|c| !bool::from(c.ct_is_zero()))
+            && hso.iter().all(|c| !bool::from(c.ct_is_zero()));
+        if !suitable {
+            return false;
+        }
+        self.inv_null = inverses_of_symmetric(o);
+        self.inv_dual_sq = inverses_of_symmetric(&hso);
+        self.precomputed = true;
+        true
+    }
+
     pub fn precompute(&mut self) -> bool {
         if self.precomputed {
             return true;
