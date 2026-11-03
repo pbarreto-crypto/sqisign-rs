@@ -38,52 +38,122 @@ use crate::hd::point::{ThetaPointDim4, THETA_DIM4_N};
 use crate::hd::profile::{NoProfiler, Profiler, SLOT_PLAIN_CODOMAIN, SLOT_PLAIN_PUSHES};
 use crate::hd::structure::ThetaStructureDim4;
 
-/// Doubling-to-image cost ratio fed to [`optimised_strategy`]: in the push slot of the
-/// two-point verifier a doubling is about 1.39 images (15.7 against 11.3 kilocycles).
+/// Doubling-to-image cost ratio fed to [`optimised_strategy`]. Per point, a
+/// doubling costs two pointwise squarings, two pointwise multiplications and two
+/// Hadamard transforms (32 squarings, 32 multiplications and 128 additions in
+/// `Fp2`), an image one of each (16, 16 and 128), so the ratio lies between 1 and
+/// 2 and depends on the cost of an addition; measured in the push slot of the
+/// two-point verifier, a doubling is about 1.39 images (15.7 against 11.3
+/// kilocycles). The optimum is flat near this value: for the level-I half-chains,
+/// the strategy optimized for 1.4 costs at most 0.07 % more than the optimal one
+/// for any true ratio between 1.2 and 1.6.
 pub(crate) const STRATEGY_MUL_C: f64 = 1.4;
 
-/// Optimal `(2,2)`-chain strategy of `n` leaves (Algorithm 60, SIKE spec;
-/// `utilities/strategy.py::optimised_strategy`). Returns the `n - 1` internal
-/// nodes (each the number of leaves to the right of that node), the sequence
-/// the chain loop walks depth-first. `mul_c` is the doubling cost relative to a
-/// unit isogeny evaluation.
+/// The cost of a subtree of `i` leaves split as `b` doublings to the left and
+/// `i - b` evaluations to the right, given the optimal costs `c` of smaller
+/// subtrees.
+#[inline]
+fn split_cost(c: &[f64], i: usize, b: usize, mul_c: f64) -> f64 {
+    c[i - b] + c[b] + (b as f64) * mul_c + (i - b) as f64
+}
+
+/// Optimal `(2,2)`-chain strategy of `n` leaves, with doubling cost `mul_c`
+/// relative to a unit isogeny evaluation. Returns the `n - 1` internal nodes
+/// (each the number of leaves to the right of that node), in the depth-first
+/// order the chain loop walks.
 ///
-/// Any valid optimal strategy yields the same isogeny chain; the precise cost
-/// model only affects efficiency, so a plain `mul_c` is used (the reference's
-/// gluing-aware `precompute_strategy_with_first_eval` is for the *whole* chain
-/// including the costly gluing first-step, which this loop does not recompute).
+/// The optimal cost obeys `C(1) = 0` and `C(i) = min_{1 <= b < i} C(i - b) +
+/// C(b) + b·mul_c + (i - b)` (De Feo, Jao and Plût). The function of `b` being
+/// minimized has a single minimum (or two adjacent equal ones), so it is found
+/// by binary search on consecutive values: Algorithm 5.2 of Zanon, Simplicio,
+/// Pereira, Doliskani and Barreto, "Faster isogeny-based compressed key
+/// agreement", which takes `O(n log n)` operations instead of `O(n^2)`. Only the
+/// optimal split of each subtree size is stored, and the strategy is read off
+/// in one pass.
+///
+/// Any valid strategy yields the same isogeny chain; the cost model only
+/// affects efficiency. The gluing step is not part of the strategy: the chain
+/// loop starts after it.
 pub fn optimised_strategy(n: usize, mul_c: f64) -> Vec<u32> {
     if n <= 1 {
         return Vec::new();
     }
-    let eval_c = 1.0_f64;
-    // s[i] = strategy (internal-node list) for a subtree of i leaves; c[i] cost.
-    let mut s: Vec<Vec<u32>> = Vec::with_capacity(n + 1);
-    let mut c: Vec<f64> = Vec::with_capacity(n + 1);
-    for _ in 0..=n {
-        s.push(Vec::new());
-        c.push(0.0);
-    }
+    let mut c = vec![0.0_f64; n + 1];
+    let mut split = vec![0_u32; n + 1];
     for i in 2..=n {
-        // b = argmin over 1..i of c[i-b] + c[b] + b*mul_c + (i-b)*eval_c
-        // (ties: smallest b, matching Python's min over ascending b).
-        let mut best_b = 1usize;
-        let mut best_cost = f64::INFINITY;
-        for b in 1..i {
-            let cost = c[i - b] + c[b] + (b as f64) * mul_c + ((i - b) as f64) * eval_c;
-            if cost < best_cost {
-                best_cost = cost;
-                best_b = b;
+        let (mut j, mut z) = (1_usize, i - 1);
+        while j < z {
+            let m = j + (z - j) / 2;
+            if split_cost(&c, i, m, mul_c) <= split_cost(&c, i, m + 1, mul_c) {
+                z = m;
+            } else {
+                j = m + 1;
             }
         }
-        let mut si = Vec::with_capacity(i - 1);
-        si.push(best_b as u32);
-        si.extend_from_slice(&s[i - best_b]);
-        si.extend_from_slice(&s[best_b]);
-        s[i] = si;
-        c[i] = best_cost;
+        c[i] = split_cost(&c, i, j, mul_c);
+        split[i] = j as u32;
     }
-    core::mem::take(&mut s[n])
+    // Pre-order walk: a node of `i` leaves emits its split `b`, then the
+    // subtree of `i - b` leaves, then the subtree of `b` leaves.
+    let mut out = Vec::with_capacity(n - 1);
+    let mut stack = vec![n];
+    while let Some(i) = stack.pop() {
+        if i <= 1 {
+            continue;
+        }
+        let b = split[i] as usize;
+        out.push(b as u32);
+        stack.push(b);
+        stack.push(i - b);
+    }
+    out
+}
+
+#[cfg(test)]
+mod strategy_tests {
+    use super::*;
+
+    /// The quadratic dynamic program, as a reference.
+    fn reference_costs(n: usize, mul_c: f64) -> Vec<f64> {
+        let mut c = vec![0.0_f64; n + 1];
+        for i in 2..=n {
+            c[i] = (1..i)
+                .map(|b| split_cost(&c, i, b, mul_c))
+                .fold(f64::INFINITY, f64::min);
+        }
+        c
+    }
+
+    /// The cost of a strategy list under the same model.
+    fn strategy_cost(s: &[u32], n: usize, mul_c: f64) -> f64 {
+        fn go(s: &[u32], pos: &mut usize, i: usize, mul_c: f64) -> f64 {
+            if i <= 1 {
+                return 0.0;
+            }
+            let b = s[*pos] as usize;
+            *pos += 1;
+            let here = (b as f64) * mul_c + (i - b) as f64;
+            let left = go(s, pos, i - b, mul_c);
+            here + left + go(s, pos, b, mul_c)
+        }
+        let mut pos = 0;
+        let cost = go(s, &mut pos, n, mul_c);
+        assert_eq!(pos, s.len(), "strategy list fully consumed");
+        cost
+    }
+
+    #[test]
+    fn binary_search_matches_the_quadratic_program() {
+        for &mul_c in &[1.0, 1.2, 1.39, 1.4, 1.6, 2.0, 3.0] {
+            let reference = reference_costs(200, mul_c);
+            for n in 1..=200 {
+                let s = optimised_strategy(n, mul_c);
+                assert_eq!(s.len(), n.saturating_sub(1));
+                let cost = strategy_cost(&s, n, mul_c);
+                assert!((cost - reference[n]).abs() < 1e-9, "n = {n}, mul_c = {mul_c}");
+            }
+        }
+    }
 }
 
 /// The result of [`run_strategy_chain`]: the per-step order-8 kernels derived by
