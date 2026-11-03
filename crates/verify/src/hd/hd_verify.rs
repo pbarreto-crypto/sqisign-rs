@@ -49,6 +49,10 @@ pub enum HdReject {
     ResponseRecovery,
     /// `2^e − q` is not a sum of two squares the verifier can find.
     NormEquation,
+    /// The degree is not good: `2^e − q` is not a probable prime congruent to
+    /// 1 modulo 4 (the goodness test of the paper's Section 4, repeated by
+    /// the verifier).
+    DegreeNotGood,
     /// The gluing parameter `m = v_2(a_2)` is out of range.
     GluingBound,
     /// The canonical four-torsion of the commitment side could not be formed.
@@ -102,6 +106,13 @@ fn inv_2r(a: u128, r: u32) -> u128 {
 
 /// The dropped scalar from `a d − b c ≡ k q (mod 2^r)`: `(c, d)` with the
 /// transmitted one of them being `c_or_d` (`c` when `a` is odd, else `d`).
+///
+/// This is the rule of the paper's Section 4 ("Which entry is dropped"): if
+/// `a` is odd, `d ≡ (kq + bc) a^{-1}`; if `a` is even, `c ≡ (ad − kq) b^{-1}`.
+/// The rule inverts `a` or `b`, so it is defined only when the entry it
+/// inverts is odd. `None` when `a` and `b` are both even, and the signature
+/// is rejected: for odd `q`, as every good degree is, no `(c, d)` then
+/// satisfies the relation, since `ad − bc` would be even and `kq` is odd.
 #[inline]
 pub fn recover_response_cd(
     a: i128,
@@ -110,7 +121,7 @@ pub fn recover_response_cd(
     q: u128,
     k: u128,
     r: u32,
-) -> (u128, u128) {
+) -> Option<(u128, u128)> {
     let a_r = red_i(a, r);
     let b_r = red_i(b, r);
     let cod = red_i(c_or_d, r);
@@ -121,11 +132,13 @@ pub fn recover_response_cd(
         let c = cod;
         let bc = mul_r(b_r, c, r);
         let d = mul_r(inv_2r(a_r, r), (kq.wrapping_add(bc)) & mask_r(r), r);
-        (c, d)
-    } else {
+        Some((c, d))
+    } else if b_r & 1 == 1 {
         let d = cod;
         let ad = mul_r(a_r, d, r);
         let c = mul_r(inv_2r(b_r, r), ad.wrapping_sub(kq) & mask_r(r), r);
-        (c, d)
+        Some((c, d))
+    } else {
+        None
     }
 }

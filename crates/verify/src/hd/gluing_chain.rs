@@ -24,7 +24,7 @@
 
 use alloc::vec::Vec;
 
-use crate::ec::jacobian::{jac_add, jac_dbl};
+use crate::ec::jacobian::{jac_add, jac_dbl, jac_dbl_ws};
 use crate::ec::{EcCurve, JacPoint};
 use crate::{Fp2, FpBackend};
 
@@ -32,11 +32,13 @@ use crate::hd::arith::{hadamard, pointwise_square};
 use crate::hd::dim2::{hadamard2, IsogenyChainDim2, TuplePoint};
 use crate::hd::dim4::{
     apply_base_change_theta_dim4, base_change_theta_dim4, product_to_theta_points_dim4_dim2,
+    BaseChangeDim4,
 };
 use crate::hd::gluing::{GluingIsogenyDim4, GLUING_KERNEL_DIRS};
 use crate::hd::kani::{gluing_dim2_f1, gluing_dim2_f2};
 use crate::hd::point::ThetaPointDim4;
 use crate::hd::product_theta::product_theta_dim2to4;
+use crate::hd::profile::{NoProfiler, Profiler, SLOT_DIM2, SLOT_GLUING};
 
 /// `[k]·P` on a Montgomery/Weierstrass curve for an arbitrary `u128` scalar,
 /// MSB-first double-and-add. `jac_add`/`jac_dbl` handle identity / `P=±Q`.
@@ -53,6 +55,131 @@ pub fn jac_mul_u128<L: FpBackend>(p: &JacPoint<L>, k: u128, curve: &EcCurve<L>) 
         }
     }
     acc
+}
+
+/// The doubling chain of a base point `B`: `2^i B` for `i` below `bits`,
+/// computed once (the doublings on the short Weierstrass model, 3M + 5S),
+/// so that every multiple `[k] B` is a sum over the set bits of `k`.
+pub struct FixedBase<L: FpBackend> {
+    /// `pts[i] = 2^i B`.
+    pub pts: Vec<JacPoint<L>>,
+}
+
+impl<L: FpBackend> FixedBase<L> {
+    /// The chain of `b` on `curve`, `bits` entries.
+    pub fn new(b: &JacPoint<L>, bits: usize, curve: &EcCurve<L>) -> Self {
+        let mut pts = Vec::with_capacity(bits);
+        pts.push(b.clone());
+        let (mut acc, mut t, ao3) = b.to_ws(curve);
+        for _ in 1..bits {
+            let (next, u) = jac_dbl_ws(&acc, &t);
+            acc = next;
+            t = u;
+            pts.push(JacPoint::from_ws(&acc, &ao3, curve));
+        }
+        Self { pts }
+    }
+
+    /// `[k] B` by additions and subtractions of the stored multiples over
+    /// the non-adjacent form of `k` (`k` below `2^bits`), about one third of
+    /// the positions nonzero against one half for the binary form; the
+    /// binary form when the non-adjacent form would need `2^bits B`, which
+    /// the table does not hold. The identity for `k = 0` and `B` itself for
+    /// `k = 1`, as `jac_mul_u128`.
+    pub fn mul(&self, k: u128, curve: &EcCurve<L>) -> JacPoint<L> {
+        if k == 0 {
+            return JacPoint::identity();
+        }
+        if k == 1 {
+            return self.pts[0].clone();
+        }
+        let top = 127 - k.leading_zeros() as usize;
+        debug_assert!(top < self.pts.len());
+        // digits d_i in {-1, 0, 1}, no two adjacent nonzero; the form of a
+        // number of `top + 1` bits has at most `top + 2` digits
+        let mut acc: Option<JacPoint<L>> = None;
+        let mut rest = k;
+        let mut i = 0usize;
+        while rest != 0 {
+            if rest & 1 == 1 {
+                if i >= self.pts.len() {
+                    return self.mul_binary(k, curve);
+                }
+                let term = if rest & 3 == 3 {
+                    rest += 1;
+                    self.pts[i].neg()
+                } else {
+                    rest -= 1;
+                    self.pts[i].clone()
+                };
+                acc = Some(match acc {
+                    None => term,
+                    Some(a) => jac_add(&a, &term, curve),
+                });
+            }
+            rest >>= 1;
+            i += 1;
+        }
+        acc.unwrap_or_else(JacPoint::identity)
+    }
+
+    /// `[k] B` over the set bits of `k`.
+    fn mul_binary(&self, k: u128, curve: &EcCurve<L>) -> JacPoint<L> {
+        let top = 127 - k.leading_zeros() as usize;
+        let mut acc = self.pts[top].clone();
+        for i in (0..top).rev() {
+            if (k >> i) & 1 == 1 {
+                acc = jac_add(&acc, &self.pts[i], curve);
+            }
+        }
+        acc
+    }
+}
+
+/// [`point_matrix_product_k`] from the fixed-base chains of the four base
+/// points `(P1, P2, R1, S)` with `R2 = [lambda] S`: an entry `w` on `R2`
+/// is the multiple `w lambda mod 2^r` of `S`, the same point since `S`
+/// has order dividing `2^r`.
+#[allow(clippy::too_many_arguments)]
+pub fn point_matrix_product_k_fixed<L: FpBackend>(
+    m: &[[u128; 8]; 8],
+    tables: &[FixedBase<L>; 4],
+    lambda: u128,
+    mask: u128,
+    e1: &EcCurve<L>,
+    e2: &EcCurve<L>,
+) -> [TuplePoint4<L>; 4] {
+    let on_s = |w: u128| w.wrapping_mul(lambda) & mask;
+    // [a] P + [b] Q with no addition when a scalar is zero (most entries are)
+    let sum = |ta: &FixedBase<L>, a: u128, tb: &FixedBase<L>, b: u128, e: &EcCurve<L>| {
+        if a == 0 {
+            tb.mul(b, e)
+        } else if b == 0 {
+            ta.mul(a, e)
+        } else {
+            jac_add(&ta.mul(a, e), &tb.mul(b, e), e)
+        }
+    };
+    core::array::from_fn(|jj| {
+        let j = 4 + jj;
+        let comp0 = sum(&tables[0], m[0][j] & mask, &tables[1], m[4][j] & mask, e1);
+        let comp1 = sum(&tables[0], m[1][j] & mask, &tables[1], m[5][j] & mask, e1);
+        let comp2 = sum(
+            &tables[2],
+            m[2][j] & mask,
+            &tables[3],
+            on_s(m[6][j] & mask),
+            e2,
+        );
+        let comp3 = sum(
+            &tables[2],
+            m[3][j] & mask,
+            &tables[3],
+            on_s(m[7][j] & mask),
+            e2,
+        );
+        TuplePoint4::new(comp0, comp1, comp2, comp3)
+    })
 }
 
 /// A point on the product fourfold `E1² × E2²` (components `[E1, E1, E2, E2]`).
@@ -150,7 +277,7 @@ fn m4_mul(a: &[[u8; 4]; 4], b: &[[u8; 4]; 4]) -> [[i64; 4]; 4] {
 /// evaluate it on the full kernel basis.
 pub struct KaniGluingChainHalf<L: FpBackend> {
     isogenies_dim2: IsogenyChainDim2<L>,
-    n_dim4: [[Fp2<L>; 16]; 16],
+    n_dim4: BaseChangeDim4<L>,
     gluing_dim4: GluingIsogenyDim4<L>,
     l_trans: [TuplePoint4<L>; 2],
     l_trans_ind: [usize; 2],
@@ -185,6 +312,46 @@ impl<L: FpBackend> KaniGluingChainHalf<L> {
         e1: &EcCurve<L>,
         e2: &EcCurve<L>,
     ) -> Option<Self> {
+        Self::new_prof(
+            points_m,
+            zero12,
+            m0,
+            e4,
+            a1,
+            a2,
+            q,
+            m,
+            m1_full,
+            m_gluing_dim4,
+            dual,
+            e1,
+            e2,
+            &mut NoProfiler,
+        )
+    }
+
+    /// [`Self::new`] with a [`Profiler`]: the dimension-2 chain
+    /// (`IsogenyChainDim2::new`) goes to `SLOT_DIM2`, everything else of the
+    /// construction (the base changes, the kernel points, the gluing step)
+    /// to `SLOT_GLUING`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_prof<P: Profiler>(
+        points_m: &[JacPoint<L>; 4],
+        zero12: &[Fp2<L>; 4],
+        m0: &[[u8; 4]; 4],
+        e4: &Fp2<L>,
+        a1: u128,
+        a2: u128,
+        q: u128,
+        m: usize,
+        m1_full: &[[u128; 8]; 8],
+        m_gluing_dim4: &[[i64; 8]; 8],
+        dual: bool,
+        e1: &EcCurve<L>,
+        e2: &EcCurve<L>,
+        prof: &mut P,
+    ) -> Option<Self> {
+        let t0 = prof.now();
         let [p1_m, q1_m, r2_m, s2_m] = points_m;
 
         // dim-2 gluing base change: N_dim2 = base_change(M0·M1_glue, e4)
@@ -197,7 +364,7 @@ impl<L: FpBackend> KaniGluingChainHalf<L> {
         let n_dim2 = crate::hd::dim2::base_change_theta_dim2(&m10, e4);
 
         // dim-4 gluing base change
-        let n_dim4 = base_change_theta_dim4(m_gluing_dim4, e4);
+        let n_dim4 = BaseChangeDim4::new(base_change_theta_dim4(m_gluing_dim4, e4), e4);
 
         // the dim-2 (2,2)-isogeny chain kernel B_K_dim2
         let two_mp2 = 1u128 << (m + 2);
@@ -221,7 +388,11 @@ impl<L: FpBackend> KaniGluingChainHalf<L> {
                 TuplePoint::new(jac_add(&s1q, &s2p.neg(), e1), two_s2.neg()),
             )
         };
+        let t1 = prof.now();
+        prof.add(SLOT_GLUING, t1 - t0);
         let isogenies_dim2 = IsogenyChainDim2::new(&tp0, &tp1, zero12, &n_dim2, m, e1, e2)?;
+        let t2 = prof.now();
+        prof.add(SLOT_DIM2, t2 - t1);
 
         // the dim-4 gluing kernel B_K_dim4 = kernel_basis(M1, m+1, …)
         let two_mp3 = 1u128 << (m + 3);
@@ -245,6 +416,7 @@ impl<L: FpBackend> KaniGluingChainHalf<L> {
 
         // Translates for special_image: 2·B_K_dim4[0], 2·B_K_dim4[1], indices 1,2.
         let l_trans = [b_k_dim4[0].double(e1, e2), b_k_dim4[1].double(e1, e2)];
+        prof.add(SLOT_GLUING, prof.now() - t2);
 
         Some(Self {
             isogenies_dim2,
@@ -281,16 +453,23 @@ impl<L: FpBackend> KaniGluingChainHalf<L> {
         // domain_base_change null = N_dim4 · (dim2_cod ⊗ dim2_cod).
         let dim2_cod = self.isogenies_dim2.codomain_null();
         let product_null = product_theta_dim2to4(dim2_cod, dim2_cod);
-        let dbc_null = apply_base_change_theta_dim4(&self.n_dim4, &product_null);
+        let dbc_null = self.n_dim4.apply(&product_null);
         if dbc_null.iter().any(|x| bool::from(x.ct_is_zero())) {
             return None;
         }
-        let inv_dbc: [Fp2<L>; 16] = core::array::from_fn(|i| crate::hd::field::inv(&dbc_null[i]));
+        // 1 / dbc_null up to a common factor; the split below normalises by its pivot.
+        let inv_dbc: [Fp2<L>; 16] = crate::hd::field::products_of_others(&dbc_null);
         let hs = hadamard(&pointwise_square(y.coords()));
         let q: [Fp2<L>; 16] = core::array::from_fn(|i| hs[i].mul(&inv_dbc[i])); // hadamard=false
 
-        let n_inv = crate::hd::dim2::mat_inverse(&self.n_dim4)?;
-        let q = apply_base_change_theta_dim4(&n_inv, &q); // product Am² coords
+        // product Am^2 coords, up to a scalar
+        let q = match self.n_dim4.apply_inverse_scaled(&q) {
+            Some(v) => v,
+            None => {
+                let n_inv = crate::hd::dim2::mat_inverse(self.n_dim4.dense())?;
+                apply_base_change_theta_dim4(&n_inv, &q)
+            }
+        };
 
         let (q1, q2) = product_to_theta_points_dim4_dim2(&q)?;
         let q1h = hadamard2(&q1);
@@ -328,7 +507,7 @@ impl<L: FpBackend> KaniGluingChainHalf<L> {
 /// N_dim4 base change`, where `Φ` is the dim-2 chain.
 fn self_eval_to_dim4<L: FpBackend>(
     chain: &IsogenyChainDim2<L>,
-    n_dim4: &[[Fp2<L>; 16]; 16],
+    n_dim4: &BaseChangeDim4<L>,
     p: &TuplePoint4<L>,
     _e1: &EcCurve<L>,
     _e2: &EcCurve<L>,
@@ -338,5 +517,5 @@ fn self_eval_to_dim4<L: FpBackend>(
     let ta = chain.eval(&a);
     let tb = chain.eval(&b);
     let prod = product_theta_dim2to4(&ta, &tb);
-    ThetaPointDim4::new(apply_base_change_theta_dim4(n_dim4, &prod))
+    ThetaPointDim4::new(n_dim4.apply(&prod))
 }
