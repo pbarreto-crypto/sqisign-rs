@@ -53,6 +53,9 @@ pub struct GluingIsogenyDim4<L: FpBackend> {
     inv_dual_null: [Fp2<L>; N],
     /// `true` where `O[i] = 0`.
     dual_null_zero: [bool; N],
+    /// Set when an evaluation met a case where Dartois's gluing evaluation
+    /// (Algorithm 5) is undefined; the verifier then rejects.
+    failed: core::cell::Cell<bool>,
 }
 
 impl<L: FpBackend> GluingIsogenyDim4<L> {
@@ -77,7 +80,14 @@ impl<L: FpBackend> GluingIsogenyDim4<L> {
             dual_null,
             inv_dual_null,
             dual_null_zero,
+            failed: core::cell::Cell::new(false),
         })
+    }
+
+    /// Whether an evaluation met an undefined case.
+    #[inline]
+    pub fn failed(&self) -> bool {
+        self.failed.get()
     }
 
     /// The codomain theta structure.
@@ -128,13 +138,18 @@ impl<L: FpBackend> GluingIsogenyDim4<L> {
         let mut lam_num: [Fp2<L>; MAX_TRANS] = core::array::from_fn(|_| Fp2::one());
         let mut lam_den: [Fp2<L>; MAX_TRANS] = core::array::from_fn(|_| Fp2::one());
         for (k, ind) in l_trans_ind.iter().enumerate() {
+            let mut found = false;
             for j in 0..N {
                 let jpk = j ^ ind;
                 if !bool::from(hsl[k][j].ct_is_zero()) && !bool::from(o[jpk].ct_is_zero()) {
                     lam_num[k] = hs_p[jpk].mul(&o[j]);
                     lam_den[k] = hsl[k][j].mul(&o[jpk]);
+                    found = true;
                     break;
                 }
+            }
+            if !found {
+                self.failed.set(true);
             }
         }
         let mut den_all = Fp2::<L>::one();
@@ -157,14 +172,19 @@ impl<L: FpBackend> GluingIsogenyDim4<L> {
             if !self.dual_null_zero[i] {
                 *ui = hs_p[i].mul(&self.inv_dual_null[i]).mul(&den_all);
             } else {
+                let mut found = false;
                 for (k, ind) in l_trans_ind.iter().enumerate() {
                     let ipk = i ^ ind;
                     if !self.dual_null_zero[ipk] {
                         *ui = self.inv_dual_null[ipk]
                             .mul(&hsl[k][ipk])
                             .mul(&lam_scaled[k]);
+                        found = true;
                         break;
                     }
+                }
+                if !found {
+                    self.failed.set(true);
                 }
             }
         }

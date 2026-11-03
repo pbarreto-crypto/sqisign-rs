@@ -143,9 +143,18 @@ pub fn gluing_images_paired<L: FpBackend>(post: &[ThetaPointDim4<L>; 4]) -> bool
 }
 
 /// The two-point chain from the gluing images `post` of `g0` to `g3` when
-/// [`gluing_images_paired`] holds, and otherwise the four-point chain
+/// [`gluing_images_paired`] holds and the null point of `start`, the gluing
+/// codomain, is exactly fixed by [`PI`]; otherwise the four-point chain
 /// ([`run_strategy_chain`]) from the same images. The flag is `true` in the
 /// second case. Both chains are `l` plain steps from `start`.
+///
+/// The two checks are the base of an induction that holds at the level of the
+/// code: every plain step is built from coordinatewise operations, Hadamard
+/// transforms and products with constants fixed by `PI`, so it commutes with
+/// `PI`, and from the base on the two-point chain computes what the
+/// four-point chain computes. By the paper's Theorem 2 and Proposition 5, the
+/// checks always pass for a correct implementation; they cost four
+/// evaluations through the gluing and six comparisons.
 pub fn run_strategy_chain_two_point_checked<L: FpBackend>(
     start: &ThetaStructureDim4<L>,
     post: &[ThetaPointDim4<L>; 4],
@@ -161,7 +170,7 @@ pub fn run_strategy_chain_two_point_checked_prof<L: FpBackend, P: Profiler>(
     l: usize,
     prof: &mut P,
 ) -> Option<(StrategyChain<L>, bool)> {
-    if gluing_images_paired(post) {
+    if gluing_images_paired(post) && exactly_fixed_by_pi(start.null_point().coords()) {
         let pair = [post[0].clone(), post[1].clone()];
         Some((
             run_strategy_chain_two_point_prof(start, &pair, l, prof)?,

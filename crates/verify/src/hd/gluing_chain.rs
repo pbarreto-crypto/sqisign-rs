@@ -429,6 +429,12 @@ impl<L: FpBackend> KaniGluingChainHalf<L> {
         })
     }
 
+    /// Whether an evaluation through this half-chain's gluing met a case where
+    /// Dartois's algorithm is undefined; the verifier then rejects.
+    pub fn failed(&self) -> bool {
+        self.isogenies_dim2.failed() || self.gluing_dim4.failed()
+    }
+
     /// The gluing-chain codomain theta null point (`glue_codomain_null`).
     #[inline]
     pub fn codomain_null(&self) -> &ThetaPointDim4<L> {

@@ -117,12 +117,17 @@ impl<L: FpBackend> ThetaStructureDim2<L> {
     /// Precompute `y0=a/b, z0=a/c, t0=a/d, Y0=AA/BB, Z0=AA/CC, T0=AA/DD`
     /// (`ThetaStructureDim2._arithmetic_precomputation`), where `(AA,BB,CC,DD)`
     /// is the squared-theta of the null. Idempotent.
-    pub fn precompute(&mut self) {
+    pub fn precompute(&mut self) -> bool {
         if self.prec.is_some() {
-            return;
+            return true;
         }
         let [a, b, c, d] = &self.null;
         let st = squared_theta2(&self.null);
+        // Dartois's doubling (Algorithm 8) needs these six values nonzero; the
+        // verifier rejects otherwise rather than invert zero.
+        if [b, c, d, &st[1], &st[2], &st[3]].iter().any(|x| bool::from(x.ct_is_zero())) {
+            return false;
+        }
         // One batched inversion of (b, c, d, BB, CC, DD) instead of six.
         let mut inv = [
             b.clone(),
@@ -142,6 +147,7 @@ impl<L: FpBackend> ThetaStructureDim2<L> {
         let big_z0 = st[0].mul(&inv[4]);
         let big_t0 = st[0].mul(&inv[5]);
         self.prec = Some([y0, z0, t0, big_y0, big_z0, big_t0]);
+        true
     }
 
     /// `2·P` (`ThetaPointDim2.double`); requires [`Self::precompute`].
@@ -484,6 +490,9 @@ pub struct GluingThetaIsogenyDim2<L: FpBackend> {
     t_shift: TuplePoint<L>,
     e1: EcCurve<L>,
     e2: EcCurve<L>,
+    /// Set when an evaluation met a case where Dartois's gluing evaluation is
+    /// undefined (both choices of the scalar vanish); the verifier then rejects.
+    failed: core::cell::Cell<bool>,
 }
 
 impl<L: FpBackend> GluingThetaIsogenyDim2<L> {
@@ -517,6 +526,7 @@ impl<L: FpBackend> GluingThetaIsogenyDim2<L> {
             t_shift,
             e1: e1.clone(),
             e2: e2.clone(),
+            failed: core::cell::Cell::new(false),
         })
     }
 
@@ -541,6 +551,9 @@ impl<L: FpBackend> GluingThetaIsogenyDim2<L> {
         let num2 = xa[2 ^ zero_idx].clone();
         let num3 = za[3 ^ zero_idx].clone();
         let num4 = xa[3 ^ zero_idx].clone();
+        if [&num1, &num2, &num3, &num4].iter().any(|x| bool::from(x.ct_is_zero())) {
+            return None;
+        }
         let den1 = crate::hd::field::inv(&num1);
         let den2 = crate::hd::field::inv(&num2);
         let den3 = crate::hd::field::inv(&num3);
@@ -580,6 +593,9 @@ impl<L: FpBackend> GluingThetaIsogenyDim2<L> {
         } else {
             (t.clone(), aybx[2 ^ z0].mul(&self.precomp[2 ^ z0]))
         };
+        if bool::from(num.ct_is_zero()) || bool::from(den.ct_is_zero()) {
+            self.failed.set(true);
+        }
 
         let mut xyzt = [Fp2::<L>::zero(), Fp2::zero(), Fp2::zero(), Fp2::zero()];
         xyzt[0 ^ z0] = xb.mul(&num);
@@ -670,7 +686,7 @@ impl<L: FpBackend> ThetaIsogenyDim2<L> {
     /// Build from the 8-torsion `(t1_8, t2_8)` above the kernel. Uses the full
     /// inversion path (image precomp `1/B,1/C,1/D`), which is independent of any
     /// domain precomputation.
-    pub fn new(t1_8: &[Fp2<L>; 4], t2_8: &[Fp2<L>; 4]) -> Self {
+    pub fn new(t1_8: &[Fp2<L>; 4], t2_8: &[Fp2<L>; 4]) -> Option<Self> {
         let st1 = squared_theta2(t1_8);
         let st2 = squared_theta2(t2_8);
         let (xa, xb) = (st1[0].clone(), st1[1].clone());
@@ -681,6 +697,11 @@ impl<L: FpBackend> ThetaIsogenyDim2<L> {
             st2[3].clone(),
         );
 
+        // Dartois's codomain computation (Algorithm 4) needs these six values
+        // nonzero; the verifier rejects otherwise rather than invert zero.
+        if [&xa, &za, &tb, &xb, &zc, &td].iter().any(|x| bool::from(x.ct_is_zero())) {
+            return None;
+        }
         // One batched inversion of (xA, zA, tB, xB, zC, tD) instead of six.
         let mut inv = [
             xa.clone(),
@@ -712,10 +733,10 @@ impl<L: FpBackend> ThetaIsogenyDim2<L> {
         // codomain dual null (A,B,C,D) with A=1, then Hadamard to standard.
         let abcd = [Fp2::<L>::one(), big_b, big_c, big_d];
         let null = hadamard2(&abcd);
-        Self {
+        Some(Self {
             codomain: ThetaStructureDim2::new(null),
             precomp: [b_inv, c_inv, d_inv],
-        }
+        })
     }
 
     pub fn codomain(&self) -> &ThetaStructureDim2<L> {
@@ -795,7 +816,9 @@ impl<L: FpBackend> IsogenyChainDim2<L> {
                 let (a, b) = tuple_stack.last().unwrap().clone();
                 let g = GluingThetaIsogenyDim2::new(&a, &b, zero12, n, e1, e2)?;
                 let mut cc = g.codomain().clone();
-                cc.precompute();
+                if !cc.precompute() {
+                    return None;
+                }
                 codomain_null = cc.null().clone();
                 tuple_stack.pop();
                 level.pop();
@@ -807,9 +830,11 @@ impl<L: FpBackend> IsogenyChainDim2<L> {
                 gluing = Some(g);
             } else {
                 let (a, b) = theta_stack.last().unwrap().clone();
-                let iso = ThetaIsogenyDim2::new(&a, &b);
+                let iso = ThetaIsogenyDim2::new(&a, &b)?;
                 let mut cc = iso.codomain().clone();
-                cc.precompute();
+                if !cc.precompute() {
+                    return None;
+                }
                 codomain_null = cc.null().clone();
                 theta_stack.pop();
                 level.pop();
@@ -828,6 +853,10 @@ impl<L: FpBackend> IsogenyChainDim2<L> {
             plain,
             codomain_null,
         })
+    }
+
+    pub fn failed(&self) -> bool {
+        self.gluing.failed.get()
     }
 
     pub fn codomain_null(&self) -> &[Fp2<L>; 4] {

@@ -523,6 +523,12 @@ fn self_derived_check<L: HdLevel, P: Profiler>(
     if !image_ok {
         return (Err(HdReject::HdImageMismatch), report);
     }
+    // A gluing evaluation that met a case where Dartois's algorithm is
+    // undefined (a vanishing value it would divide by) makes the verdict a
+    // rejection, as the algorithm itself would stop there.
+    if chain1.failed() || chain2.failed() {
+        return (Err(HdReject::ChainFailed), report);
+    }
     (Ok(()), report)
 }
 
