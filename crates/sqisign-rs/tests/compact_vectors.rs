@@ -8,6 +8,7 @@
 //! format's known-answer vectors.
 #![cfg(feature = "compact")]
 
+use sqisign_verify::hd::Scalar;
 use sqisign_rs::compact::{compact_keygen, compact_public_key_to_bytes, compact_sign};
 use sqisign_rs::mp::ShakeRng;
 use sqisign_rs::sqisign::level1;
@@ -68,14 +69,24 @@ fn vectors_level1() {
             p.hint_pk_p, p.hint_pk_q
         ));
 
-        let scalar = |v: i128| format!("{v:x}");
+        // lowercase hexadecimal without leading zeros, as `{:x}` on an integer
+        let scalar = |v: Scalar| match v.0.iter().rposition(|&l| l != 0) {
+            None => "0".to_string(),
+            Some(top) => {
+                let mut h = format!("{:x}", v.0[top]);
+                for l in v.0[..top].iter().rev() {
+                    h.push_str(&format!("{l:016x}"));
+                }
+                h
+            }
+        };
         let mut qb = s.q.to_le_bytes().to_vec();
         qb.truncate(32);
         let mut cb = Vec::new();
         for l in chal.iter() {
             cb.extend_from_slice(&l.to_le_bytes());
         }
-        let record = |a: i128, q_hex: &str, chal_hex: &str| {
+        let record = |a: Scalar, q_hex: &str, chal_hex: &str| {
             format!(
                 "{}a = {}\nb = {}\nc_or_d = {}\nq = {}\nhint_com_P = {}\nhint_com_Q = {}\nchal = {}\n",
                 fp2_line("A_com", &s.a_com.encode()),
@@ -91,7 +102,7 @@ fn vectors_level1() {
         sigs.push_str(&record(s.a, &hex_be(&qb), &hex_be(&cb)));
         // negatives, one kind per vector in turn
         match i % 3 {
-            0 => bad.push_str(&record(s.a ^ 1, &hex_be(&qb), &hex_be(&cb))),
+            0 => bad.push_str(&record(s.a ^ Scalar::ONE, &hex_be(&qb), &hex_be(&cb))),
             1 => {
                 let mut q2 = qb.clone();
                 q2[0] ^= 4; // still odd, still 3 mod 4

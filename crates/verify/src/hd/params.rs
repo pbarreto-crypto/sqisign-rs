@@ -10,6 +10,11 @@ use super::uint::U3;
 /// The integer type of the response degree `q < 2^e` at the implemented level
 /// (I, `e = 174`): 192 bits.
 pub type Degree = U3;
+
+/// The integer type of the scalars modulo `2^r` (the transmitted action and
+/// the starting matrices) at the implemented level (I, `r = 89`): 128 bits on
+/// two `u64` limbs.
+pub type Scalar = super::uint::Uint<2>;
 use crate::params::P324_3;
 use crate::precomp::PrimePrecomp;
 

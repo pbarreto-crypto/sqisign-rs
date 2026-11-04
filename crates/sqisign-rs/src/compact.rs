@@ -41,7 +41,7 @@ use sqisign_verify::ec::{EcBasis, EcCurve};
 use sqisign_verify::fp::Fp2;
 use sqisign_verify::hd::{
     canonical_hints, encode_public_key, encode_signature, hd_challenge, hd_challenge_len,
-    hd_torsion_basis, pk_wire_bytes, sig_wire_bytes, Degree, HdLevel, MAX_CHAL_BYTES,
+    hd_torsion_basis, pk_wire_bytes, sig_wire_bytes, Degree, HdLevel, Scalar, MAX_CHAL_BYTES,
     MAX_PK_WIRE_BYTES,
 };
 
@@ -201,12 +201,14 @@ pub fn compact_public_key_to_bytes<L: HdLevel>(
     encode_public_key::<L>(&pk.a_pk, pk.hint_p, pk.hint_q, out)
 }
 
-fn to_u128<const N: usize>(x: &Ibz<N>) -> u128 {
-    let mut d = [0u64; 2];
+/// A response scalar, already reduced modulo `2^r`, as the verifier's
+/// [`Scalar`].
+fn to_scalar<const N: usize>(x: &Ibz<N>) -> Scalar {
     let mut all = [0u64; 32];
     x.to_digits(&mut all[..N.min(32)]);
-    d.copy_from_slice(&all[..2]);
-    (d[0] as u128) | ((d[1] as u128) << 64)
+    let s = Scalar::from_le_limbs(&all);
+    debug_assert!(all[s.0.len()..].iter().all(|&l| l == 0), "scalar wider than Scalar");
+    s
 }
 
 /// The response degree as the verifier's [`Degree`] integer; `x < 2^e` fits.
@@ -419,9 +421,9 @@ pub fn compact_sign_stats<L: HdLevel, const N: usize>(
 
     let n = encode_signature::<L>(
         &a_com,
-        to_u128(&a) as i128,
-        to_u128(&b) as i128,
-        to_u128(&c_or_d) as i128,
+        to_scalar(&a),
+        to_scalar(&b),
+        to_scalar(&c_or_d),
         &to_degree(&q),
         hp_com,
         hq_com,

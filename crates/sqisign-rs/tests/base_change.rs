@@ -9,6 +9,7 @@
 //! orthogonal. Feature `compact`.
 #![cfg(feature = "compact")]
 
+use sqisign_verify::hd::Scalar;
 use sqisign_rs::compact::{compact_keygen, compact_public_key_to_bytes, compact_sign};
 use sqisign_rs::mp::ShakeRng;
 use sqisign_rs::sqisign::level1;
@@ -302,8 +303,8 @@ fn check_vector(tag: &str, pkb: &[u8; PK_BYTES], sig: &[u8; SIG_BYTES], msg: &[u
         q: s.q,
     };
     let k = hd_kernel_setup::<P324_3>(&hdsig).unwrap();
-    let q4 = s.q.low_u128();
-    let mask = (1u128 << <P324_3 as HdLevel>::R) - 1;
+    let q4: Scalar = s.q.resize();
+    let mask = Scalar::mask(<P324_3 as HdLevel>::R);
     let (m1, m2) = starting_two_symplectic_matrices(k.a1, k.a2, q4, mask).unwrap();
     let mg4 = [
         gluing_bc_dim4_f1(k.a1, k.a2, q4, k.m, &m1),

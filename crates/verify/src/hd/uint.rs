@@ -298,6 +298,157 @@ impl<const N: usize> Uint<N> {
     }
 }
 
+impl<const N: usize> Uint<N> {
+    /// The low 64 bits.
+    #[inline]
+    pub fn low_u64(&self) -> u64 {
+        self.0[0]
+    }
+
+    /// From little-endian limbs, the first `N` of them (missing ones are zero).
+    pub fn from_le_limbs(l: &[u64]) -> Self {
+        let mut r = Self::ZERO;
+        for (d, s) in r.0.iter_mut().zip(l.iter()) {
+            *d = *s;
+        }
+        r
+    }
+
+    /// The same value on `M` limbs, truncated or zero-extended.
+    pub fn resize<const M: usize>(&self) -> Uint<M> {
+        Uint::<M>::from_le_limbs(&self.0)
+    }
+
+    /// `2^k − 1`, for `k ≤ 64 N`.
+    pub fn mask(k: u32) -> Self {
+        if k >= Self::BITS {
+            return Self([u64::MAX; N]);
+        }
+        Self::pow2(k).wrapping_sub(&Self::ONE)
+    }
+
+    /// `−self` modulo `2^(64 N)`.
+    #[inline]
+    pub fn wrapping_neg(&self) -> Self {
+        Self::ZERO.wrapping_sub(self)
+    }
+
+    /// Bit `k`.
+    #[inline]
+    pub fn bit(&self, k: u32) -> bool {
+        (self.0[(k / 64) as usize] >> (k % 64)) & 1 == 1
+    }
+
+    /// The number of trailing zero bits (`64 N` for zero).
+    pub fn trailing_zeros(&self) -> u32 {
+        for i in 0..N {
+            if self.0[i] != 0 {
+                return 64 * i as u32 + self.0[i].trailing_zeros();
+            }
+        }
+        Self::BITS
+    }
+
+    /// The inverse of an odd `self` modulo `2^k` (`k ≤ 64 N`), by Newton's
+    /// iteration: each step doubles the number of correct low bits, so the
+    /// number of steps follows `k`.
+    pub fn inv_mod_pow2(&self, k: u32) -> Self {
+        let m = Self::mask(k);
+        let a = *self & m;
+        let mut inv = Self::ONE;
+        let mut good = 1u32;
+        while good < k {
+            inv = (inv * (Self::from_u64(2) - a * inv)) & m;
+            good *= 2;
+        }
+        inv & m
+    }
+}
+
+/// Wrapping arithmetic modulo `2^(64 N)` and bitwise operations, by value, so
+/// that scalars modulo `2^r` read as they would with primitive integers.
+impl<const N: usize> core::ops::Add for Uint<N> {
+    type Output = Self;
+    #[inline]
+    fn add(self, o: Self) -> Self {
+        self.wrapping_add(&o)
+    }
+}
+impl<const N: usize> core::ops::Sub for Uint<N> {
+    type Output = Self;
+    #[inline]
+    fn sub(self, o: Self) -> Self {
+        self.wrapping_sub(&o)
+    }
+}
+impl<const N: usize> core::ops::Mul for Uint<N> {
+    type Output = Self;
+    #[inline]
+    fn mul(self, o: Self) -> Self {
+        self.wrapping_mul(&o)
+    }
+}
+impl<const N: usize> core::ops::Neg for Uint<N> {
+    type Output = Self;
+    #[inline]
+    fn neg(self) -> Self {
+        self.wrapping_neg()
+    }
+}
+impl<const N: usize> core::ops::BitAnd for Uint<N> {
+    type Output = Self;
+    #[inline]
+    fn bitand(self, o: Self) -> Self {
+        Uint(core::array::from_fn(|i| self.0[i] & o.0[i]))
+    }
+}
+impl<const N: usize> core::ops::BitOr for Uint<N> {
+    type Output = Self;
+    #[inline]
+    fn bitor(self, o: Self) -> Self {
+        Uint(core::array::from_fn(|i| self.0[i] | o.0[i]))
+    }
+}
+impl<const N: usize> core::ops::BitXor for Uint<N> {
+    type Output = Self;
+    #[inline]
+    fn bitxor(self, o: Self) -> Self {
+        Uint(core::array::from_fn(|i| self.0[i] ^ o.0[i]))
+    }
+}
+impl<const N: usize> core::ops::Shl<u32> for Uint<N> {
+    type Output = Self;
+    #[inline]
+    fn shl(self, k: u32) -> Self {
+        Uint::shl(&self, k)
+    }
+}
+impl<const N: usize> core::ops::Shr<u32> for Uint<N> {
+    type Output = Self;
+    #[inline]
+    fn shr(self, k: u32) -> Self {
+        Uint::shr(&self, k)
+    }
+}
+impl<const N: usize> PartialOrd for Uint<N> {
+    #[inline]
+    fn partial_cmp(&self, o: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.compare(o))
+    }
+}
+impl<const N: usize> Ord for Uint<N> {
+    #[inline]
+    fn cmp(&self, o: &Self) -> core::cmp::Ordering {
+        self.compare(o)
+    }
+}
+impl<const N: usize> From<u64> for Uint<N> {
+    #[inline]
+    fn from(x: u64) -> Self {
+        Self::from_u64(x)
+    }
+}
+
 impl Uint<4> {
     /// The 32 little-endian bytes.
     pub fn to_le_bytes(&self) -> [u8; 32] {

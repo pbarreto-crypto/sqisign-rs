@@ -7,6 +7,7 @@
 //! compact public key in place of the round-3 one). It is not transmitted:
 //! the verifier recomputes it from the transmitted commitment curve.
 
+use super::params::Scalar;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 use sha3::Shake256;
 
@@ -71,38 +72,21 @@ pub enum HdReject {
 }
 
 #[inline]
-fn mask_r(r: u32) -> u128 {
-    if r >= 128 {
-        u128::MAX
-    } else {
-        (1u128 << r) - 1
-    }
+fn mask_r(r: u32) -> Scalar {
+    Scalar::mask(r)
 }
 
 #[inline]
-fn red_i(x: i128, r: u32) -> u128 {
-    (x as u128) & mask_r(r)
+fn mul_r(x: Scalar, y: Scalar, r: u32) -> Scalar {
+    (x * y) & mask_r(r)
 }
 
 #[inline]
-fn mul_r(x: u128, y: u128, r: u32) -> u128 {
-    x.wrapping_mul(y) & mask_r(r)
+fn inv_2r(a: Scalar, r: u32) -> Scalar {
+    debug_assert!(a.is_odd(), "inverse mod 2^r requires odd input");
+    a.inv_mod_pow2(r)
 }
 
-/// `a^-1 mod 2^r` for odd `a` (Newton).
-#[inline]
-fn inv_2r(a: u128, r: u32) -> u128 {
-    let m = mask_r(r);
-    let a = a & m;
-    debug_assert!(a & 1 == 1, "inverse mod 2^r requires odd input");
-    let mut inv = 1u128;
-    let mut prec = 1u32;
-    while prec < r {
-        inv = inv.wrapping_mul(2u128.wrapping_sub(a.wrapping_mul(inv))) & m;
-        prec *= 2;
-    }
-    inv & m
-}
 
 /// The dropped scalar from `a d − b c ≡ k q (mod 2^r)`: `(c, d)` with the
 /// transmitted one of them being `c_or_d` (`c` when `a` is odd, else `d`).
@@ -115,28 +99,25 @@ fn inv_2r(a: u128, r: u32) -> u128 {
 /// satisfies the relation, since `ad − bc` would be even and `kq` is odd.
 #[inline]
 pub fn recover_response_cd(
-    a: i128,
-    b: i128,
-    c_or_d: i128,
-    q: u128,
-    k: u128,
+    a: Scalar,
+    b: Scalar,
+    c_or_d: Scalar,
+    q: Scalar,
+    k: Scalar,
     r: u32,
-) -> Option<(u128, u128)> {
-    let a_r = red_i(a, r);
-    let b_r = red_i(b, r);
-    let cod = red_i(c_or_d, r);
-    let q_r = q & mask_r(r);
-    let k_r = k & mask_r(r);
-    let kq = mul_r(k_r, q_r, r);
-    if a_r & 1 == 1 {
+) -> Option<(Scalar, Scalar)> {
+    let m = mask_r(r);
+    let (a_r, b_r, cod) = (a & m, b & m, c_or_d & m);
+    let kq = mul_r(k & m, q & m, r);
+    if a_r.is_odd() {
         let c = cod;
         let bc = mul_r(b_r, c, r);
-        let d = mul_r(inv_2r(a_r, r), (kq.wrapping_add(bc)) & mask_r(r), r);
+        let d = mul_r(inv_2r(a_r, r), (kq + bc) & m, r);
         Some((c, d))
-    } else if b_r & 1 == 1 {
+    } else if b_r.is_odd() {
         let d = cod;
         let ad = mul_r(a_r, d, r);
-        let c = mul_r(inv_2r(b_r, r), ad.wrapping_sub(kq) & mask_r(r), r);
+        let c = mul_r(inv_2r(b_r, r), (ad - kq) & m, r);
         Some((c, d))
     } else {
         None

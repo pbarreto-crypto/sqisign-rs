@@ -24,6 +24,7 @@
 
 use alloc::vec::Vec;
 
+use crate::hd::params::Scalar;
 use crate::ec::jacobian::{jac_add, jac_dbl, jac_dbl_ws};
 use crate::ec::{EcCurve, JacPoint};
 use crate::{Fp2, FpBackend};
@@ -40,17 +41,17 @@ use crate::hd::point::ThetaPointDim4;
 use crate::hd::product_theta::product_theta_dim2to4;
 use crate::hd::profile::{NoProfiler, Profiler, SLOT_DIM2, SLOT_GLUING};
 
-/// `[k]·P` on a Montgomery/Weierstrass curve for an arbitrary `u128` scalar,
+/// `[k]·P` on a Montgomery/Weierstrass curve for an arbitrary `Scalar` scalar,
 /// MSB-first double-and-add. `jac_add`/`jac_dbl` handle identity / `P=±Q`.
-pub fn jac_mul_u128<L: FpBackend>(p: &JacPoint<L>, k: u128, curve: &EcCurve<L>) -> JacPoint<L> {
-    if k == 0 {
+pub fn jac_mul_u128<L: FpBackend>(p: &JacPoint<L>, k: Scalar, curve: &EcCurve<L>) -> JacPoint<L> {
+    if k.is_zero() {
         return JacPoint::identity();
     }
-    let top = 127 - k.leading_zeros();
+    let top = k.bits() - 1;
     let mut acc = p.clone();
     for i in (0..top).rev() {
         acc = jac_dbl(&acc, curve);
-        if (k >> i) & 1 == 1 {
+        if k.bit(i as u32) {
             acc = jac_add(&acc, p, curve);
         }
     }
@@ -86,30 +87,30 @@ impl<L: FpBackend> FixedBase<L> {
     /// binary form when the non-adjacent form would need `2^bits B`, which
     /// the table does not hold. The identity for `k = 0` and `B` itself for
     /// `k = 1`, as `jac_mul_u128`.
-    pub fn mul(&self, k: u128, curve: &EcCurve<L>) -> JacPoint<L> {
-        if k == 0 {
+    pub fn mul(&self, k: Scalar, curve: &EcCurve<L>) -> JacPoint<L> {
+        if k.is_zero() {
             return JacPoint::identity();
         }
-        if k == 1 {
+        if k == Scalar::ONE {
             return self.pts[0].clone();
         }
-        let top = 127 - k.leading_zeros() as usize;
+        let top = k.bits() as usize - 1;
         debug_assert!(top < self.pts.len());
         // digits d_i in {-1, 0, 1}, no two adjacent nonzero; the form of a
         // number of `top + 1` bits has at most `top + 2` digits
         let mut acc: Option<JacPoint<L>> = None;
         let mut rest = k;
         let mut i = 0usize;
-        while rest != 0 {
-            if rest & 1 == 1 {
+        while !rest.is_zero() {
+            if rest.is_odd() {
                 if i >= self.pts.len() {
                     return self.mul_binary(k, curve);
                 }
-                let term = if rest & 3 == 3 {
-                    rest += 1;
+                let term = if rest.low_u64() & 3 == 3 {
+                    rest = rest + Scalar::ONE;
                     self.pts[i].neg()
                 } else {
-                    rest -= 1;
+                    rest = rest - Scalar::ONE;
                     self.pts[i].clone()
                 };
                 acc = Some(match acc {
@@ -117,18 +118,18 @@ impl<L: FpBackend> FixedBase<L> {
                     Some(a) => jac_add(&a, &term, curve),
                 });
             }
-            rest >>= 1;
+            rest = rest >> 1;
             i += 1;
         }
         acc.unwrap_or_else(JacPoint::identity)
     }
 
     /// `[k] B` over the set bits of `k`.
-    fn mul_binary(&self, k: u128, curve: &EcCurve<L>) -> JacPoint<L> {
-        let top = 127 - k.leading_zeros() as usize;
+    fn mul_binary(&self, k: Scalar, curve: &EcCurve<L>) -> JacPoint<L> {
+        let top = k.bits() as usize - 1;
         let mut acc = self.pts[top].clone();
         for i in (0..top).rev() {
-            if (k >> i) & 1 == 1 {
+            if k.bit(i as u32) {
                 acc = jac_add(&acc, &self.pts[i], curve);
             }
         }
@@ -142,19 +143,19 @@ impl<L: FpBackend> FixedBase<L> {
 /// has order dividing `2^r`.
 #[allow(clippy::too_many_arguments)]
 pub fn point_matrix_product_k_fixed<L: FpBackend>(
-    m: &[[u128; 8]; 8],
+    m: &[[Scalar; 8]; 8],
     tables: &[FixedBase<L>; 4],
-    lambda: u128,
-    mask: u128,
+    lambda: Scalar,
+    mask: Scalar,
     e1: &EcCurve<L>,
     e2: &EcCurve<L>,
 ) -> [TuplePoint4<L>; 4] {
-    let on_s = |w: u128| w.wrapping_mul(lambda) & mask;
+    let on_s = |w: Scalar| w.wrapping_mul(&lambda) & mask;
     // [a] P + [b] Q with no addition when a scalar is zero (most entries are)
-    let sum = |ta: &FixedBase<L>, a: u128, tb: &FixedBase<L>, b: u128, e: &EcCurve<L>| {
-        if a == 0 {
+    let sum = |ta: &FixedBase<L>, a: Scalar, tb: &FixedBase<L>, b: Scalar, e: &EcCurve<L>| {
+        if a.is_zero() {
             tb.mul(b, e)
-        } else if b == 0 {
+        } else if b.is_zero() {
             ta.mul(a, e)
         } else {
             jac_add(&ta.mul(a, e), &tb.mul(b, e), e)
@@ -225,12 +226,12 @@ impl<L: FpBackend> TuplePoint4<L> {
 /// the rows act on `(P1,0,0,0),(0,P1,0,0),(0,0,R1,0),(0,0,0,R1),(P2,…),…`.
 #[allow(clippy::too_many_arguments)]
 pub fn point_matrix_product_k<L: FpBackend>(
-    m: &[[u128; 8]; 8],
+    m: &[[Scalar; 8]; 8],
     p1: &JacPoint<L>,
     p2: &JacPoint<L>,
     r1: &JacPoint<L>,
     r2: &JacPoint<L>,
-    mask: u128,
+    mask: Scalar,
     e1: &EcCurve<L>,
     e2: &EcCurve<L>,
 ) -> [TuplePoint4<L>; 4] {
@@ -302,11 +303,11 @@ impl<L: FpBackend> KaniGluingChainHalf<L> {
         zero12: &[Fp2<L>; 4],
         m0: &[[u8; 4]; 4],
         e4: &Fp2<L>,
-        a1: u128,
-        a2: u128,
-        q: u128,
+        a1: Scalar,
+        a2: Scalar,
+        q: Scalar,
         m: usize,
-        m1_full: &[[u128; 8]; 8],
+        m1_full: &[[Scalar; 8]; 8],
         m_gluing_dim4: &[[i64; 8]; 8],
         dual: bool,
         e1: &EcCurve<L>,
@@ -340,11 +341,11 @@ impl<L: FpBackend> KaniGluingChainHalf<L> {
         zero12: &[Fp2<L>; 4],
         m0: &[[u8; 4]; 4],
         e4: &Fp2<L>,
-        a1: u128,
-        a2: u128,
-        q: u128,
+        a1: Scalar,
+        a2: Scalar,
+        q: Scalar,
         m: usize,
-        m1_full: &[[u128; 8]; 8],
+        m1_full: &[[Scalar; 8]; 8],
         m_gluing_dim4: &[[i64; 8]; 8],
         dual: bool,
         e1: &EcCurve<L>,
@@ -367,10 +368,10 @@ impl<L: FpBackend> KaniGluingChainHalf<L> {
         let n_dim4 = BaseChangeDim4::new(base_change_theta_dim4(m_gluing_dim4, e4), e4);
 
         // the dim-2 (2,2)-isogeny chain kernel B_K_dim2
-        let two_mp2 = 1u128 << (m + 2);
-        let a1r = a1 % two_mp2;
-        let a2r = a2 % two_mp2;
-        let (s1c, s2c) = (2 * a1r, 2 * a2r);
+        let mask_mp2 = Scalar::mask((m + 2) as u32);
+        let a1r = a1 & mask_mp2;
+        let a2r = a2 & mask_mp2;
+        let (s1c, s2c) = (a1r << 1, a2r << 1);
         let s1p = jac_mul_u128(p1_m, s1c, e1);
         let s2p = jac_mul_u128(p1_m, s2c, e1);
         let s1q = jac_mul_u128(q1_m, s1c, e1);
@@ -395,8 +396,7 @@ impl<L: FpBackend> KaniGluingChainHalf<L> {
         prof.add(SLOT_DIM2, t2 - t1);
 
         // the dim-4 gluing kernel B_K_dim4 = kernel_basis(M1, m+1, …)
-        let two_mp3 = 1u128 << (m + 3);
-        let mask_mp3 = two_mp3 - 1;
+        let mask_mp3 = Scalar::mask((m + 3) as u32);
         let lamb = crate::hd::kani::inverse_mod_pow2(q, mask_mp3); // inverse_mod(q, 2^{m+3})
         let lamb_s2 = jac_mul_u128(s2_m, lamb, e2);
         let b_k_dim4 =

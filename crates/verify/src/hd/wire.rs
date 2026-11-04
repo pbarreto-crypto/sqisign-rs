@@ -23,15 +23,15 @@ use super::params::{
     pk_wire_bytes, sig_wire_bytes, HdLevel, MAX_PK_WIRE_BYTES, MAX_SIG_WIRE_BYTES,
 };
 use super::self_contained::{hd_verify_with, HdSignature, HdVerifyOptions, HdVerifyReport};
-use super::params::Degree;
+use super::params::{Degree, Scalar};
 
 /// A decoded compact signature.
 #[derive(Clone, Debug)]
 pub struct ParsedSignature<L: FpBackend> {
     pub a_com: Fp2<L>,
-    pub a: i128,
-    pub b: i128,
-    pub c_or_d: i128,
+    pub a: Scalar,
+    pub b: Scalar,
+    pub c_or_d: Scalar,
     pub q: Degree,
     pub hint_com_p: u32,
     pub hint_com_q: u32,
@@ -62,23 +62,18 @@ fn write_q<L: HdLevel>(q: &Degree, out: &mut [u8]) -> Option<()> {
     Some(())
 }
 
-fn read_scalar<L: HdLevel>(b: &[u8]) -> Result<i128, HdReject> {
-    let mut v = 0u128;
-    for (i, &byte) in b.iter().enumerate().take(L::SCALAR_BYTES) {
-        v |= (byte as u128) << (8 * i);
-    }
-    if v >> L::R != 0 {
+fn read_scalar<L: HdLevel>(b: &[u8]) -> Result<Scalar, HdReject> {
+    let v = Scalar::from_le_bytes(&b[..L::SCALAR_BYTES]);
+    if !(v >> L::R).is_zero() {
         return Err(HdReject::MalformedInput);
     }
-    Ok(v as i128)
+    Ok(v)
 }
 
-fn write_scalar<L: HdLevel>(s: i128, out: &mut [u8]) {
-    let v = s.rem_euclid(1i128 << L::R) as u128;
-    for (i, b) in out.iter_mut().enumerate().take(L::SCALAR_BYTES) {
-        *b = (v >> (8 * i)) as u8;
-    }
+fn write_scalar<L: HdLevel>(s: Scalar, out: &mut [u8]) {
+    (s & Scalar::mask(L::R)).write_le_bytes(&mut out[..L::SCALAR_BYTES]);
 }
+
 
 /// Decode a signature (strict).
 pub fn parse_signature<L: HdLevel>(bytes: &[u8]) -> Result<ParsedSignature<L>, HdReject> {
@@ -127,9 +122,9 @@ pub fn parse_public_key<L: HdLevel>(bytes: &[u8]) -> Result<ParsedPublicKey<L>, 
 /// returns the length, `None` if `q` does not fit or a hint exceeds a byte.
 pub fn encode_signature<L: HdLevel>(
     a_com: &Fp2<L>,
-    a: i128,
-    b: i128,
-    c_or_d: i128,
+    a: Scalar,
+    b: Scalar,
+    c_or_d: Scalar,
     q: &Degree,
     hint_com_p: u32,
     hint_com_q: u32,

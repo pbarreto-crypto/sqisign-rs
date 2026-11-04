@@ -4,6 +4,7 @@
 //! w_com`, the dropped scalar from `a d − b c ≡ k q (mod 2^r)`, and the
 //! images `σ(R_com) = a P_resc + b Q_resc`, `σ(S_com) = c P_resc + d Q_resc`.
 
+use super::params::Scalar;
 use alloc::vec::Vec;
 
 use crate::ec::jacobian::{jac_add, jac_dbl};
@@ -21,18 +22,18 @@ use super::profile::{NoProfiler, Profiler};
 /// `q mod 2^r` enters here).
 #[derive(Clone, Copy, Debug)]
 pub struct ResponseScalars {
-    pub a: i128,
-    pub b: i128,
-    pub c_or_d: i128,
-    pub q: u128,
+    pub a: Scalar,
+    pub b: Scalar,
+    pub c_or_d: Scalar,
+    pub q: Scalar,
 }
 
 /// Stage-3 outputs: `c`, `d` modulo `2^r`, the commitment basis of order
 /// `2^r` and its images on `E_chall`.
 pub struct ResponseRecovery<L: FpBackend> {
-    pub k: u128,
-    pub c: u128,
-    pub d: u128,
+    pub k: Scalar,
+    pub c: Scalar,
+    pub d: Scalar,
     pub w_com: Fp2<L>,
     /// `P_com`, the first point of the hinted basis of `E_com[2^f]` (the
     /// stage-6 input).
@@ -48,15 +49,15 @@ pub struct ResponseRecovery<L: FpBackend> {
 /// (public data).
 fn jac_double_mul<L: FpBackend>(
     p: &JacPoint<L>,
-    a: i128,
+    a: Scalar,
     q: &JacPoint<L>,
-    b: i128,
+    b: Scalar,
     curve: &EcCurve<L>,
 ) -> JacPoint<L> {
-    let (ma, mb) = (a.unsigned_abs(), b.unsigned_abs());
-    let pa = if a < 0 { p.neg() } else { p.clone() };
-    let qb = if b < 0 { q.neg() } else { q.clone() };
-    if ma | mb == 0 {
+    // The scalars are residues modulo 2^r, never negative.
+    let (ma, mb) = (a, b);
+    let (pa, qb) = (p.clone(), q.clone());
+    if ma.is_zero() && mb.is_zero() {
         return JacPoint::identity();
     }
     // the joint sparse form of (|a|, |b|): digit pairs in {-1, 0, 1}^2, at
@@ -100,13 +101,13 @@ fn jac_double_mul<L: FpBackend>(
 
 /// The joint sparse form of `(a, b)` (Solinas), least significant pair
 /// first, the last pair nonzero.
-fn joint_sparse_form(mut a: u128, mut b: u128) -> Vec<(i8, i8)> {
-    let mut out = Vec::with_capacity(130);
-    let (mut da, mut db) = (0u128, 0u128);
-    while a + da > 0 || b + db > 0 {
-        let la = (a & 7) + da;
-        let lb = (b & 7) + db;
-        let digit = |l: u128, other: u128| -> i8 {
+fn joint_sparse_form(mut a: Scalar, mut b: Scalar) -> Vec<(i8, i8)> {
+    let mut out = Vec::with_capacity(Scalar::BITS as usize + 2);
+    let (mut da, mut db) = (0u64, 0u64);
+    while !a.is_zero() || da > 0 || !b.is_zero() || db > 0 {
+        let la = (a.low_u64() & 7) + da;
+        let lb = (b.low_u64() & 7) + db;
+        let digit = |l: u64, other: u64| -> i8 {
             if l & 1 == 0 {
                 return 0;
             }
@@ -124,8 +125,8 @@ fn joint_sparse_form(mut a: u128, mut b: u128) -> Vec<(i8, i8)> {
         if 1 + v as i32 == 2 * db as i32 {
             db = 1 - db;
         }
-        a >>= 1;
-        b >>= 1;
+        a = a >> 1;
+        b = b >> 1;
         out.push((u, v));
     }
     out
@@ -155,7 +156,7 @@ pub fn recover_response_prof<L: HdLevel, P: Profiler>(
     // The rule for the dropped scalar inverts a when a is odd and b
     // otherwise; with a and b both even it is not defined, and the
     // signature is rejected here, before any inversion.
-    if a & 1 == 0 && b & 1 == 0 {
+    if !a.is_odd() && !b.is_odd() {
         return None;
     }
     let r = L::R;
@@ -180,17 +181,17 @@ pub fn recover_response_prof<L: HdLevel, P: Profiler>(
     // given 1 / w_chall
     let mut scal = [0u64; MAX_ORDER_WORDS];
     fp2_dlog_2e(&mut scal[..L::ORDER_WORDS], &w_com, &chal.w_chal.inv(), r)?;
-    let k = (scal[0] as u128) | ((scal[1] as u128) << 64);
+    let k = Scalar::from_le_limbs(&scal);
     prof.sub_add(8, prof.now() - t);
     let t = prof.now();
 
     // `None` when the rule of Section 4 is undefined (a and b both even).
     let (c, d) = recover_response_cd(a, b, c_or_d, q, k, r)?;
 
-    let (c_img, d_img): (i128, i128) = if a & 1 != 0 {
-        (c_or_d, d as i128)
+    let (c_img, d_img): (Scalar, Scalar) = if a.is_odd() {
+        (c_or_d, d)
     } else {
-        (c as i128, c_or_d)
+        (c, c_or_d)
     };
 
     let e_chal = &chal.e_chal;
