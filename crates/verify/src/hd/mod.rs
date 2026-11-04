@@ -60,6 +60,7 @@ pub mod isogeny;
 pub mod kani;
 mod nqr_tables_p324_3;
 mod nqr_tables_p500_27;
+mod nqr_tables_p664_17;
 pub mod params;
 pub mod point;
 pub mod primality;

@@ -261,3 +261,4 @@ pub const fn public_key_bytes<L: HdLevel>() -> usize {
 
 const _: () = assert!(MAX_SIG_WIRE_BYTES >= sig_wire_bytes::<crate::params::P324_3>());
 const _: () = assert!(MAX_SIG_WIRE_BYTES >= sig_wire_bytes::<crate::params::P500_27>());
+const _: () = assert!(MAX_SIG_WIRE_BYTES >= sig_wire_bytes::<crate::params::P664_17>());

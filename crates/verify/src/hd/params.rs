@@ -2,7 +2,7 @@
 //! the embedding exponent `e` (the response degree is `q < 2^e`), the
 //! torsion `r = ⌈e/2⌉ + 2` the half-chains use and the response scalars
 //! are transmitted modulo, the challenge length `λ`, and the library's
-//! non-residue tables for the basis-from-hint convention. Levels I and III.
+//! non-residue tables for the basis-from-hint convention. Levels I, III and V.
 
 use crate::fp::FpBackend;
 use super::uint::Uint;
@@ -61,11 +61,12 @@ impl<const N: usize> DegreeInt for Uint<N> {
         super::kani::norm_equation_2f_minus_q(e, self)
     }
 }
-use crate::params::{P324_3, P500_27};
+use crate::params::{P324_3, P500_27, P664_17};
 use crate::precomp::PrimePrecomp;
 
 use super::nqr_tables_p324_3::{NQR_TABLE_P324_3, Z_NQR_TABLE_P324_3};
 use super::nqr_tables_p500_27::{NQR_TABLE_P500_27, Z_NQR_TABLE_P500_27};
+use super::nqr_tables_p664_17::{NQR_TABLE_P664_17, Z_NQR_TABLE_P664_17};
 
 /// A prime with compact-format parameters.
 pub trait HdLevel: FpBackend + PrimePrecomp {
@@ -144,7 +145,25 @@ impl HdLevel for P500_27 {
     }
 }
 
-/// The largest signature of the implemented levels (level III).
-pub const MAX_SIG_WIRE_BYTES: usize = sig_wire_bytes::<P500_27>();
-/// The largest public key of the implemented levels (level III).
-pub const MAX_PK_WIRE_BYTES: usize = pk_wire_bytes::<P500_27>();
+impl HdLevel for P664_17 {
+    const LAMBDA: u32 = 256;
+    const E_EMBED: u32 = 346;
+    const R: u32 = 175;
+    const E1: u32 = 173;
+    const FP2_BYTES: usize = 168;
+    const Q_BYTES: usize = 44;
+    const SCALAR_BYTES: usize = 22;
+    const CHALLENGE_BYTES: usize = 32;
+    type Degree = Uint<6>;
+    fn nqr_table() -> [&'static [u8]; 20] {
+        core::array::from_fn(|i| &NQR_TABLE_P664_17[i][..])
+    }
+    fn z_nqr_table() -> [&'static [u8]; 20] {
+        core::array::from_fn(|i| &Z_NQR_TABLE_P664_17[i][..])
+    }
+}
+
+/// The largest signature of the implemented levels (level V).
+pub const MAX_SIG_WIRE_BYTES: usize = sig_wire_bytes::<P664_17>();
+/// The largest public key of the implemented levels (level V).
+pub const MAX_PK_WIRE_BYTES: usize = pk_wire_bytes::<P664_17>();
