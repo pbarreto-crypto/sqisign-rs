@@ -41,8 +41,8 @@ use sqisign_verify::ec::{EcBasis, EcCurve};
 use sqisign_verify::fp::Fp2;
 use sqisign_verify::hd::{
     canonical_hints, encode_public_key, encode_signature, hd_challenge, hd_challenge_len,
-    hd_torsion_basis, pk_wire_bytes, sig_wire_bytes, HdLevel, MAX_CHAL_BYTES, MAX_PK_WIRE_BYTES,
-    U4,
+    hd_torsion_basis, pk_wire_bytes, sig_wire_bytes, Degree, HdLevel, MAX_CHAL_BYTES,
+    MAX_PK_WIRE_BYTES,
 };
 
 use crate::id2iso::{
@@ -209,10 +209,15 @@ fn to_u128<const N: usize>(x: &Ibz<N>) -> u128 {
     (d[0] as u128) | ((d[1] as u128) << 64)
 }
 
-fn to_u4<const N: usize>(x: &Ibz<N>) -> U4 {
+/// The response degree as the verifier's [`Degree`] integer; `x < 2^e` fits.
+fn to_degree<const N: usize>(x: &Ibz<N>) -> Degree {
     let mut all = [0u64; 32];
     x.to_digits(&mut all[..N.min(32)]);
-    U4([all[0], all[1], all[2], all[3]])
+    let mut d = Degree::ZERO;
+    let w = d.0.len();
+    d.0.copy_from_slice(&all[..w]);
+    debug_assert!(all[w..].iter().all(|&l| l == 0), "degree wider than Degree");
+    d
 }
 
 /// `x / 2^k` when `2^k` divides the non-negative `x`, else `None`.
@@ -417,7 +422,7 @@ pub fn compact_sign_stats<L: HdLevel, const N: usize>(
         to_u128(&a) as i128,
         to_u128(&b) as i128,
         to_u128(&c_or_d) as i128,
-        &to_u4(&q),
+        &to_degree(&q),
         hp_com,
         hq_com,
         out,

@@ -13,9 +13,9 @@
 //!
 //! * **Norm equation.** `N = 2^e - q` has `e` bits (`e = 174` at level I,
 //!   `q < 2^e`), and Cornacchia squares values up to `⌊√N⌋ ≈ 2^87`
-//!   (`b² < 2^136`). A fixed 256-bit [`U4`] holds `N` and every square with
-//!   room to spare; the modular exponentiation for `√(-1) mod N` uses
-//!   `MontyForm` (internal wide products, no overflow). No `alloc`.
+//!   (`b² < 2^136`). The level's [`Degree`] type (192 bits at level I) holds
+//!   `N` and every square; the modular exponentiation for `√(-1) mod N` uses
+//!   Montgomery arithmetic (internal wide products, no overflow). No `alloc`.
 //! * **Symplectic matrices over `Z/2^f`** (`f = r = 70` inside `KaniEndoHalf`).
 //!   Entries are kept as `u128` in `[0, 2^70)`. Products of two reduced entries
 //!   reach ~140 bits and *wrap* `u128` (`> 2^128`), but `2^70 | 2^128`, so
@@ -40,7 +40,8 @@
 //! therefore validate the completion by the **symplectic property** (it is a
 //! valid completion of the real kernel blocks for all 5 vectors).
 
-use super::uint::{jacobi_small, U4};
+use super::params::Degree;
+use super::uint::jacobi_small;
 
 // Sum of two squares (Cornacchia), N = 2^f - q = a₁² + a₂², N prime ≡ 1 (mod 4).
 
@@ -50,16 +51,16 @@ use super::uint::{jacobi_small, U4};
 /// to `(n − 1)/4`, then the Euclidean descent), `a_1` odd. `None` if `n` is
 /// even, no root is found among the first bases, or the descent fails (`n`
 /// not a prime `≡ 1 mod 4`, or not a sum of two squares).
-pub fn sum_of_two_squares(n: &U4) -> Option<(U4, U4)> {
+pub fn sum_of_two_squares(n: &Degree) -> Option<(Degree, Degree)> {
     if !n.is_odd() || n.0[0] & 3 != 1 {
         return None;
     }
-    let nm1 = n.wrapping_sub(&U4::ONE);
+    let nm1 = n.wrapping_sub(&Degree::ONE);
     let exp = nm1.shr(2); // (n - 1) / 4
                           // The first base with Jacobi symbol -1 (for a prime n the base the old
                           // loop over every base found); one exponentiation, t^2 != -1 rejects.
     let b = (2..1000u64).find(|&b| jacobi_small(b, n) == -1)?;
-    let t = U4::from_u64(b).pow_mod(&exp, n);
+    let t = Degree::from_u64(b).pow_mod(&exp, n);
     if t.mul_mod(&t, n) != nm1 {
         return None;
     }
@@ -90,8 +91,8 @@ pub fn sum_of_two_squares(n: &U4) -> Option<(U4, U4)> {
 }
 
 /// `(a_1, a_2)` with `a_1^2 + a_2^2 = 2^e − q`.
-pub fn norm_equation_2f_minus_q(e: u32, q: &U4) -> Option<(U4, U4)> {
-    let n = U4::pow2(e).wrapping_sub(q);
+pub fn norm_equation_2f_minus_q(e: u32, q: &Degree) -> Option<(Degree, Degree)> {
+    let n = Degree::pow2(e).wrapping_sub(q);
     sum_of_two_squares(&n)
 }
 

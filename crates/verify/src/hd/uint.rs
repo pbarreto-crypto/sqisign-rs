@@ -1,46 +1,71 @@
-//! Fixed-width unsigned integers on four `u64` limbs for the norm equation
-//! `2^e − q = a_1^2 + a_2^2` of the compact format: the response degree `q`
-//! (`e ≤ 255` bits), Cornacchia's descent and the square root of `−1`
-//! modulo a prime by exponentiation. Variable time; everything here is
-//! public data (the signature's `q`).
+//! Fixed-width unsigned integers on `N` little-endian `u64` limbs, for the
+//! norm equation `2^e − q = a_1^2 + a_2^2` of the compact format: the response
+//! degree `q`, Cornacchia's descent, the square root of `−1` modulo a prime by
+//! exponentiation, and the goodness test. Each level uses the width it needs
+//! (`U3`, 192 bits, at level I, where `e = 174`). Variable time; everything
+//! here is public data (the signature's `q`). The 128-bit products below are
+//! the usual double-width products of two limbs.
 
-/// A 256-bit unsigned integer, little-endian limbs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct U4(pub [u64; 4]);
+/// The largest width supported, in limbs (512 bits); scratch buffers are
+/// sized from it.
+const MAX_LIMBS: usize = 8;
 
-impl U4 {
-    pub const ZERO: U4 = U4([0; 4]);
-    pub const ONE: U4 = U4([1, 0, 0, 0]);
+/// An unsigned integer on `N` little-endian `u64` limbs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Uint<const N: usize>(pub [u64; N]);
 
-    pub fn from_u64(x: u64) -> U4 {
-        U4([x, 0, 0, 0])
+/// 192 bits: the response degree at level I (`e = 174`).
+pub type U3 = Uint<3>;
+/// 256 bits.
+pub type U4 = Uint<4>;
+
+impl<const N: usize> Default for Uint<N> {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
+impl<const N: usize> Uint<N> {
+    pub const ZERO: Self = Uint([0; N]);
+    pub const ONE: Self = {
+        let mut a = [0u64; N];
+        a[0] = 1;
+        Uint(a)
+    };
+    pub const BITS: u32 = 64 * N as u32;
+
+    pub fn from_u64(x: u64) -> Self {
+        let mut r = Self::ZERO;
+        r.0[0] = x;
+        r
     }
 
-    /// `2^k` for `k < 256`.
-    pub fn pow2(k: u32) -> U4 {
-        let mut r = U4::ZERO;
+    /// `2^k`, for `k < 64 N`.
+    pub fn pow2(k: u32) -> Self {
+        let mut r = Self::ZERO;
         r.0[(k / 64) as usize] = 1u64 << (k % 64);
         r
     }
 
-    pub fn from_le_bytes(b: &[u8]) -> U4 {
-        let mut r = U4::ZERO;
-        for (i, byte) in b.iter().enumerate().take(32) {
+    /// From little-endian bytes, at most `8 N` of them.
+    pub fn from_le_bytes(b: &[u8]) -> Self {
+        let mut r = Self::ZERO;
+        for (i, byte) in b.iter().enumerate().take(8 * N) {
             r.0[i / 8] |= (*byte as u64) << (8 * (i % 8));
         }
         r
     }
 
-    pub fn to_le_bytes(&self) -> [u8; 32] {
-        let mut out = [0u8; 32];
-        for (i, limb) in self.0.iter().enumerate() {
-            out[8 * i..8 * i + 8].copy_from_slice(&limb.to_le_bytes());
+    /// Writes the low `out.len()` bytes, little-endian (`out.len() ≤ 8 N`).
+    pub fn write_le_bytes(&self, out: &mut [u8]) {
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = (self.0[i / 8] >> (8 * (i % 8))) as u8;
         }
-        out
     }
 
     pub fn low_u128(&self) -> u128 {
-        (self.0[0] as u128) | ((self.0[1] as u128) << 64)
+        let hi = if N > 1 { self.0[1] } else { 0 };
+        (self.0[0] as u128) | ((hi as u128) << 64)
     }
 
     pub fn is_zero(&self) -> bool {
@@ -52,7 +77,7 @@ impl U4 {
     }
 
     pub fn bits(&self) -> u32 {
-        for i in (0..4).rev() {
+        for i in (0..N).rev() {
             if self.0[i] != 0 {
                 return 64 * i as u32 + 64 - self.0[i].leading_zeros();
             }
@@ -60,24 +85,24 @@ impl U4 {
         0
     }
 
-    pub fn compare(&self, other: &U4) -> core::cmp::Ordering {
-        for i in (0..4).rev() {
-            if self.0[i] != other.0[i] {
-                return self.0[i].cmp(&other.0[i]);
+    pub fn compare(&self, other: &Self) -> core::cmp::Ordering {
+        for i in (0..N).rev() {
+            match self.0[i].cmp(&other.0[i]) {
+                core::cmp::Ordering::Equal => continue,
+                o => return o,
             }
         }
         core::cmp::Ordering::Equal
     }
 
-    pub fn lt(&self, other: &U4) -> bool {
+    pub fn lt(&self, other: &Self) -> bool {
         self.compare(other) == core::cmp::Ordering::Less
     }
 
-    /// `self + other` modulo `2^256`.
-    pub fn wrapping_add(&self, other: &U4) -> U4 {
-        let mut r = U4::ZERO;
+    pub fn wrapping_add(&self, other: &Self) -> Self {
+        let mut r = Self::ZERO;
         let mut carry = 0u128;
-        for i in 0..4 {
+        for i in 0..N {
             let s = self.0[i] as u128 + other.0[i] as u128 + carry;
             r.0[i] = s as u64;
             carry = s >> 64;
@@ -85,45 +110,45 @@ impl U4 {
         r
     }
 
-    /// `self − other` modulo `2^256`.
-    pub fn wrapping_sub(&self, other: &U4) -> U4 {
-        let mut r = U4::ZERO;
+    pub fn wrapping_sub(&self, other: &Self) -> Self {
+        let mut r = Self::ZERO;
         let mut borrow = 0u64;
-        for i in 0..4 {
-            let (d, b1) = self.0[i].overflowing_sub(other.0[i]);
-            let (d, b2) = d.overflowing_sub(borrow);
-            r.0[i] = d;
+        for i in 0..N {
+            let (d1, b1) = self.0[i].overflowing_sub(other.0[i]);
+            let (d2, b2) = d1.overflowing_sub(borrow);
+            r.0[i] = d2;
             borrow = (b1 | b2) as u64;
         }
         r
     }
 
-    /// The low 256 bits of `self * other`.
-    pub fn wrapping_mul(&self, other: &U4) -> U4 {
+    pub fn wrapping_mul(&self, other: &Self) -> Self {
         let w = self.mul_wide(other);
-        U4([w[0], w[1], w[2], w[3]])
+        let mut r = Self::ZERO;
+        r.0.copy_from_slice(&w[..N]);
+        r
     }
 
-    /// The full 512-bit product, little-endian limbs.
-    pub fn mul_wide(&self, other: &U4) -> [u64; 8] {
-        let mut w = [0u64; 8];
-        for i in 0..4 {
+    /// The full product; its first `2 N` limbs are significant.
+    pub fn mul_wide(&self, other: &Self) -> [u64; 2 * MAX_LIMBS] {
+        let mut w = [0u64; 2 * MAX_LIMBS];
+        for i in 0..N {
             let mut carry = 0u128;
-            for j in 0..4 {
+            for j in 0..N {
                 let acc = w[i + j] as u128 + (self.0[i] as u128) * (other.0[j] as u128) + carry;
                 w[i + j] = acc as u64;
                 carry = acc >> 64;
             }
-            w[i + 4] = carry as u64;
+            w[i + N] = carry as u64;
         }
         w
     }
 
-    pub fn shl(&self, k: u32) -> U4 {
-        let mut r = U4::ZERO;
+    pub fn shl(&self, k: u32) -> Self {
+        let mut r = Self::ZERO;
         let limbs = (k / 64) as usize;
         let bits = k % 64;
-        for i in (limbs..4).rev() {
+        for i in (limbs..N).rev() {
             let src = i - limbs;
             r.0[i] = self.0[src] << bits;
             if bits != 0 && src > 0 {
@@ -133,73 +158,70 @@ impl U4 {
         r
     }
 
-    pub fn shr(&self, k: u32) -> U4 {
-        let mut r = U4::ZERO;
+    pub fn shr(&self, k: u32) -> Self {
+        let mut r = Self::ZERO;
         let limbs = (k / 64) as usize;
         let bits = k % 64;
-        for i in 0..4 - limbs {
+        for i in 0..N.saturating_sub(limbs) {
             let src = i + limbs;
             r.0[i] = self.0[src] >> bits;
-            if bits != 0 && src + 1 < 4 {
+            if bits != 0 && src + 1 < N {
                 r.0[i] |= self.0[src + 1] << (64 - bits);
             }
         }
         r
     }
 
-    /// The number of significant limbs (`0` for zero).
     #[inline]
     fn limbs(&self) -> usize {
-        (0..4).rev().find(|&i| self.0[i] != 0).map_or(0, |i| i + 1)
+        (0..N).rev().find(|&i| self.0[i] != 0).map_or(0, |i| i + 1)
     }
 
-    /// `self mod d` for a single-limb `d != 0`.
     pub fn rem_u64(&self, d: u64) -> u64 {
         let dv = d as u128;
         let mut rem = 0u128;
-        for i in (0..4).rev() {
+        for i in (0..N).rev() {
             rem = (((rem << 64) | self.0[i] as u128) % dv) & u64::MAX as u128;
         }
         rem as u64
     }
 
-    /// `(self / d, self % d)` for `d != 0`, by word-level long division
-    /// (Knuth's algorithm D on 64-bit limbs).
-    pub fn div_rem(&self, d: &U4) -> (U4, U4) {
+    /// Quotient and remainder (Knuth's Algorithm D).
+    pub fn div_rem(&self, d: &Self) -> (Self, Self) {
         debug_assert!(!d.is_zero());
         if self.lt(d) {
-            return (U4::ZERO, *self);
+            return (Self::ZERO, *self);
         }
         let n = d.limbs();
         if n == 1 {
             let dv = d.0[0] as u128;
-            let mut q = U4::ZERO;
+            let mut q = Self::ZERO;
             let mut rem = 0u128;
-            for i in (0..4).rev() {
+            for i in (0..N).rev() {
                 let cur = (rem << 64) | self.0[i] as u128;
                 q.0[i] = (cur / dv) as u64;
                 rem = cur % dv;
             }
-            return (q, U4::from_u64(rem as u64));
+            return (q, Self::from_u64(rem as u64));
         }
         // Normalise so that the divisor's top limb has its top bit set.
         let sh = d.0[n - 1].leading_zeros();
-        let mut un = [0u64; 5];
-        let mut vn = [0u64; 4];
+        let mut un = [0u64; MAX_LIMBS + 1];
+        let mut vn = [0u64; MAX_LIMBS];
         if sh == 0 {
-            un[..4].copy_from_slice(&self.0);
-            vn.copy_from_slice(&d.0);
+            un[..N].copy_from_slice(&self.0);
+            vn[..N].copy_from_slice(&d.0);
         } else {
-            for i in (1..4).rev() {
+            for i in (1..N).rev() {
                 un[i] = (self.0[i] << sh) | (self.0[i - 1] >> (64 - sh));
                 vn[i] = (d.0[i] << sh) | (d.0[i - 1] >> (64 - sh));
             }
-            un[4] = self.0[3] >> (64 - sh);
+            un[N] = self.0[N - 1] >> (64 - sh);
             un[0] = self.0[0] << sh;
             vn[0] = d.0[0] << sh;
         }
-        let m = 4 - n;
-        let mut q = U4::ZERO;
+        let m = N - n;
+        let mut q = Self::ZERO;
         let b: u128 = 1 << 64;
         for j in (0..=m).rev() {
             let num = ((un[j + n] as u128) << 64) | un[j + n - 1] as u128;
@@ -238,7 +260,7 @@ impl U4 {
             q.0[j] = qhat as u64;
         }
         // The remainder is un[0..n], shifted back.
-        let mut r = U4::ZERO;
+        let mut r = Self::ZERO;
         if sh == 0 {
             r.0[..n].copy_from_slice(&un[..n]);
         } else {
@@ -249,24 +271,22 @@ impl U4 {
         (q, r)
     }
 
-    /// `self * other mod m` for an odd `m`, through [`Monty`].
-    pub fn mul_mod(&self, other: &U4, m: &U4) -> U4 {
+    pub fn mul_mod(&self, other: &Self, m: &Self) -> Self {
         let mt = Monty::new(m);
         mt.from(&mt.mul(&mt.to(self), &mt.to(other)))
     }
 
-    /// `self^e mod m` for an odd `m`, through [`Monty`]: a 4-bit window.
-    pub fn pow_mod(&self, e: &U4, m: &U4) -> U4 {
+    pub fn pow_mod(&self, e: &Self, m: &Self) -> Self {
         let mt = Monty::new(m);
         mt.from(&mt.pow(&mt.to(self), e))
     }
 
-    /// `⌊√self⌋` by Newton's method.
-    pub fn isqrt(&self) -> U4 {
+    /// `⌊√self⌋` by Newton's iteration.
+    pub fn isqrt(&self) -> Self {
         if self.is_zero() {
-            return U4::ZERO;
+            return Self::ZERO;
         }
-        let mut x = U4::ONE.shl(self.bits().div_ceil(2));
+        let mut x = Self::ONE.shl(self.bits().div_ceil(2));
         loop {
             let (q, _) = self.div_rem(&x);
             let x_new = x.wrapping_add(&q).shr(1);
@@ -278,33 +298,44 @@ impl U4 {
     }
 }
 
-/// Montgomery arithmetic modulo an odd 256-bit `n` with `R = 2^256`: the
-/// products of Cornacchia's exponentiation reduced word by word (CIOS)
-/// instead of bit by bit.
-pub struct Monty {
-    n: U4,
-    /// `-n^-1 mod 2^64`.
-    n0: u64,
-    /// `R^2 mod n`.
-    r2: U4,
+impl Uint<4> {
+    /// The 32 little-endian bytes.
+    pub fn to_le_bytes(&self) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        self.write_le_bytes(&mut out);
+        out
+    }
 }
 
-impl Monty {
-    /// The context of an odd `n` below `2^255`.
-    pub fn new(n: &U4) -> Monty {
+impl Uint<3> {
+    /// The 24 little-endian bytes.
+    pub fn to_le_bytes(&self) -> [u8; 24] {
+        let mut out = [0u8; 24];
+        self.write_le_bytes(&mut out);
+        out
+    }
+}
+
+/// Montgomery arithmetic modulo an odd `n` of `N` limbs, `R = 2^(64 N)`.
+pub struct Monty<const N: usize> {
+    n: Uint<N>,
+    n0: u64,
+    r2: Uint<N>,
+}
+
+impl<const N: usize> Monty<N> {
+    pub fn new(n: &Uint<N>) -> Self {
         debug_assert!(n.is_odd());
         // n^-1 mod 2^64 by Newton's iteration from the 3-bit seed n itself.
         let mut inv = n.0[0];
         for _ in 0..6 {
             inv = inv.wrapping_mul(2u64.wrapping_sub(n.0[0].wrapping_mul(inv)));
         }
-        // R mod n = (2^256 - n) mod n, then R^2 mod n by 256 doublings.
-        let mut r = U4::ZERO.wrapping_sub(n).div_rem(n).1;
-        for _ in 0..256 {
-            r = r.wrapping_add(&r);
-            if !r.lt(n) {
-                r = r.wrapping_sub(n);
-            }
+        // R mod n = (2^(64 N) - n) mod n, then R^2 mod n by 64 N doublings.
+        let mut r = Uint::<N>::ZERO.wrapping_sub(n).div_rem(n).1;
+        for _ in 0..64 * N {
+            let (s, c) = (r.wrapping_add(&r), r.0[N - 1] >> 63);
+            r = if c != 0 || !s.lt(n) { s.wrapping_sub(n) } else { s };
         }
         Monty {
             n: *n,
@@ -313,45 +344,47 @@ impl Monty {
         }
     }
 
-    /// `a * b * R^-1 mod n` for `a, b < n`.
+    /// Montgomery product `a b R^-1 mod n` (CIOS). The accumulator is `N`
+    /// limbs plus two carry words held apart, so that it can stay in
+    /// registers whatever `N` is.
     #[allow(clippy::needless_range_loop)] // the limb index runs over three arrays at once
-    pub fn mul(&self, a: &U4, b: &U4) -> U4 {
+    #[inline(always)]
+    pub fn mul(&self, a: &Uint<N>, b: &Uint<N>) -> Uint<N> {
         let n = &self.n.0;
-        let mut t = [0u64; 6];
-        for i in 0..4 {
+        let mut t = [0u64; N];
+        let mut tn: u64 = 0;
+        for i in 0..N {
             let bi = b.0[i] as u128;
             let mut c: u128 = 0;
-            for j in 0..4 {
+            for j in 0..N {
                 let s = t[j] as u128 + a.0[j] as u128 * bi + c;
                 t[j] = s as u64;
                 c = s >> 64;
             }
-            let s = t[4] as u128 + c;
-            t[4] = s as u64;
-            t[5] = (s >> 64) as u64;
+            let s = tn as u128 + c;
+            tn = s as u64;
+            let tn1 = (s >> 64) as u64;
             let m = (t[0].wrapping_mul(self.n0)) as u128;
             let s = t[0] as u128 + m * n[0] as u128;
             let mut c = s >> 64;
-            for j in 1..4 {
+            for j in 1..N {
                 let s = t[j] as u128 + m * n[j] as u128 + c;
                 t[j - 1] = s as u64;
                 c = s >> 64;
             }
-            let s = t[4] as u128 + c;
-            t[3] = s as u64;
-            t[4] = t[5] + (s >> 64) as u64;
-            t[5] = 0;
+            let s = tn as u128 + c;
+            t[N - 1] = s as u64;
+            tn = tn1 + (s >> 64) as u64;
         }
-        let r = U4([t[0], t[1], t[2], t[3]]);
-        if t[4] != 0 || !r.lt(&self.n) {
+        let r = Uint(t);
+        if tn != 0 || !r.lt(&self.n) {
             r.wrapping_sub(&self.n)
         } else {
             r
         }
     }
 
-    /// `x` into Montgomery form, `x R mod n`.
-    pub fn to(&self, x: &U4) -> U4 {
+    pub fn to(&self, x: &Uint<N>) -> Uint<N> {
         let x = if x.lt(&self.n) {
             *x
         } else {
@@ -360,15 +393,12 @@ impl Monty {
         self.mul(&x, &self.r2)
     }
 
-    /// Out of Montgomery form.
-    pub fn from(&self, x: &U4) -> U4 {
-        self.mul(x, &U4::ONE)
+    pub fn from(&self, x: &Uint<N>) -> Uint<N> {
+        self.mul(x, &Uint::<N>::ONE)
     }
 
-    /// `base^e` in Montgomery form (`base` in Montgomery form), a 4-bit
-    /// window from the top: one multiplication per non-zero window.
-    pub fn pow(&self, base: &U4, e: &U4) -> U4 {
-        let one = self.to(&U4::ONE);
+    pub fn pow(&self, base: &Uint<N>, e: &Uint<N>) -> Uint<N> {
+        let one = self.to(&Uint::<N>::ONE);
         let mut table = [one; 16];
         for i in 1..16 {
             table[i] = self.mul(&table[i - 1], base);
@@ -396,9 +426,9 @@ impl Monty {
 }
 
 /// The Jacobi symbol `(a / n)` for a small `a` and an odd `n`.
-pub fn jacobi_small(a: u64, n: &U4) -> i32 {
+pub fn jacobi_small<const N: usize>(a: u64, n: &Uint<N>) -> i32 {
     debug_assert!(n.is_odd());
-    if n == &U4::ONE {
+    if n == &Uint::<N>::ONE {
         return 1;
     }
     let mut a = a;
@@ -423,7 +453,6 @@ pub fn jacobi_small(a: u64, n: &U4) -> i32 {
     result * jacobi_u64(n.rem_u64(a), a)
 }
 
-/// The Jacobi symbol `(a / n)` on machine words, `n` odd.
 fn jacobi_u64(mut a: u64, mut n: u64) -> i32 {
     let mut result = 1i32;
     a %= n;

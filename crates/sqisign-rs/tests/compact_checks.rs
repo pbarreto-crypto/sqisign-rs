@@ -10,7 +10,7 @@ use sqisign_rs::compact::{compact_keygen, compact_public_key_to_bytes, compact_s
 use sqisign_rs::mp::ShakeRng;
 use sqisign_rs::sqisign::level1;
 use sqisign_verify::hd::primality::is_good_degree;
-use sqisign_verify::hd::uint::U4;
+use sqisign_verify::hd::Degree;
 use sqisign_verify::hd::{hd_verify_bytes, HdReject};
 use sqisign_verify::P324_3;
 
@@ -59,12 +59,12 @@ fn rejects_a_and_b_both_even() {
 fn rejects_a_degree_that_is_not_good() {
     for (pkb, msg, sig) in signatures(4) {
         assert_eq!(hd_verify_bytes::<P324_3>(&sig, &pkb, &msg), Ok(()));
-        let q = U4::from_le_bytes(&sig[Q_AT..Q_AT + Q_LEN]);
+        let q = Degree::from_le_bytes(&sig[Q_AT..Q_AT + Q_LEN]);
         assert!(is_good_degree(E, &q), "an honest degree is good");
         // q + 4k keeps q = 3 (mod 4), so 2^e - q stays 1 (mod 4); take the
         // first k for which 2^e - q - 4k is composite.
         let bad = (1u64..)
-            .map(|k| q.wrapping_add(&U4::from_u64(4 * k)))
+            .map(|k| q.wrapping_add(&Degree::from_u64(4 * k)))
             .find(|q2| !is_good_degree(E, q2))
             .unwrap();
         let mut t = sig;

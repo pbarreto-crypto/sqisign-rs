@@ -27,7 +27,7 @@ use crate::ec::{EcCurve, JacPoint};
 use crate::fp::{Fp2, FpBackend};
 
 use super::params::HdLevel;
-use super::uint::U4;
+use super::params::Degree;
 
 use crate::hd::arith::{hadamard, pointwise_square};
 use crate::hd::canonical::make_canonical;
@@ -141,7 +141,7 @@ pub struct HdSignature<'a, L: FpBackend> {
     pub resp_c_or_d: i128,
     /// Response degree `q` (the full ~136-bit value).
     /// The response degree, `q < 2^e`.
-    pub q: U4,
+    pub q: Degree,
 }
 
 // small helpers (mirroring the validated tests)

@@ -121,7 +121,8 @@ pub use two_point::{
     gluing_images_paired, null_fixed_by_pi, permute_pi, run_strategy_chain_two_point,
     run_strategy_chain_two_point_checked, PI, PI_FIXED, PI_PAIRS,
 };
-pub use uint::U4;
+pub use params::Degree;
+pub use uint::{Uint, U3, U4};
 pub use wire::{
     challenge_limbs, encode_public_key, encode_signature, hd_verify_bytes, hd_verify_bytes_with,
     hd_verify_parsed, hd_verify_parsed_with, parse_public_key, parse_signature, public_key_bytes,

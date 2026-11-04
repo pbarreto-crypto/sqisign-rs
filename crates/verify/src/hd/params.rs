@@ -5,6 +5,11 @@
 //! non-residue tables for the basis-from-hint convention. Level I only.
 
 use crate::fp::FpBackend;
+use super::uint::U3;
+
+/// The integer type of the response degree `q < 2^e` at the implemented level
+/// (I, `e = 174`): 192 bits.
+pub type Degree = U3;
 use crate::params::P324_3;
 use crate::precomp::PrimePrecomp;
 
