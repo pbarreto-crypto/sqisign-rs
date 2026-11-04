@@ -10,7 +10,8 @@ use sqisign_rs::compact::{compact_keygen, compact_public_key_to_bytes, compact_s
 use sqisign_rs::mp::ShakeRng;
 use sqisign_rs::sqisign::level1;
 use sqisign_verify::hd::primality::is_good_degree;
-use sqisign_verify::hd::Degree;
+use sqisign_verify::hd::Uint;
+type Degree = Uint<3>; // level I
 use sqisign_verify::hd::{hd_verify_bytes, HdReject};
 use sqisign_verify::P324_3;
 

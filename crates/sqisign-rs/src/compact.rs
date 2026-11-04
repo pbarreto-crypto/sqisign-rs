@@ -41,7 +41,7 @@ use sqisign_verify::ec::{EcBasis, EcCurve};
 use sqisign_verify::fp::Fp2;
 use sqisign_verify::hd::{
     canonical_hints, encode_public_key, encode_signature, hd_challenge, hd_challenge_len,
-    hd_torsion_basis, pk_wire_bytes, sig_wire_bytes, Degree, HdLevel, Scalar, MAX_CHAL_BYTES,
+    hd_torsion_basis, pk_wire_bytes, sig_wire_bytes, DegreeInt, HdLevel, Scalar, MAX_CHAL_BYTES,
     MAX_PK_WIRE_BYTES,
 };
 
@@ -212,14 +212,12 @@ fn to_scalar<const N: usize>(x: &Ibz<N>) -> Scalar {
 }
 
 /// The response degree as the verifier's [`Degree`] integer; `x < 2^e` fits.
-fn to_degree<const N: usize>(x: &Ibz<N>) -> Degree {
+fn to_degree<L: HdLevel, const N: usize>(x: &Ibz<N>) -> L::Degree {
     let mut all = [0u64; 32];
     x.to_digits(&mut all[..N.min(32)]);
-    let mut d = Degree::ZERO;
-    let w = d.0.len();
-    d.0.copy_from_slice(&all[..w]);
-    debug_assert!(all[w..].iter().all(|&l| l == 0), "degree wider than Degree");
-    d
+    let w = L::Degree::limbs();
+    debug_assert!(all[w..].iter().all(|&l| l == 0), "degree wider than the level's Degree");
+    L::Degree::from_le_limbs(&all[..w])
 }
 
 /// `x / 2^k` when `2^k` divides the non-negative `x`, else `None`.
@@ -424,7 +422,7 @@ pub fn compact_sign_stats<L: HdLevel, const N: usize>(
         to_scalar(&a),
         to_scalar(&b),
         to_scalar(&c_or_d),
-        &to_degree(&q),
+        &to_degree::<L, N>(&q),
         hp_com,
         hq_com,
         out,

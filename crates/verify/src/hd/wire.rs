@@ -23,16 +23,16 @@ use super::params::{
     pk_wire_bytes, sig_wire_bytes, HdLevel, MAX_PK_WIRE_BYTES, MAX_SIG_WIRE_BYTES,
 };
 use super::self_contained::{hd_verify_with, HdSignature, HdVerifyOptions, HdVerifyReport};
-use super::params::{Degree, Scalar};
+use super::params::{DegreeInt, Scalar};
 
 /// A decoded compact signature.
 #[derive(Clone, Debug)]
-pub struct ParsedSignature<L: FpBackend> {
+pub struct ParsedSignature<L: HdLevel> {
     pub a_com: Fp2<L>,
     pub a: Scalar,
     pub b: Scalar,
     pub c_or_d: Scalar,
-    pub q: Degree,
+    pub q: L::Degree,
     pub hint_com_p: u32,
     pub hint_com_q: u32,
 }
@@ -45,20 +45,19 @@ pub struct ParsedPublicKey<L: FpBackend> {
     pub hint_pk_q: u32,
 }
 
-fn read_q<L: HdLevel>(b: &[u8]) -> Result<Degree, HdReject> {
-    let q = Degree::from_le_bytes(&b[..L::Q_BYTES]);
+fn read_q<L: HdLevel>(b: &[u8]) -> Result<L::Degree, HdReject> {
+    let q = L::Degree::from_le_bytes(&b[..L::Q_BYTES]);
     if q.bits() > L::E_EMBED {
         return Err(HdReject::MalformedInput);
     }
     Ok(q)
 }
 
-fn write_q<L: HdLevel>(q: &Degree, out: &mut [u8]) -> Option<()> {
-    let bytes = q.to_le_bytes();
-    if bytes[L::Q_BYTES..].iter().any(|&x| x != 0) {
+fn write_q<L: HdLevel>(q: &L::Degree, out: &mut [u8]) -> Option<()> {
+    if q.bits() > 8 * L::Q_BYTES as u32 {
         return None;
     }
-    out[..L::Q_BYTES].copy_from_slice(&bytes[..L::Q_BYTES]);
+    q.write_le_bytes(&mut out[..L::Q_BYTES]);
     Some(())
 }
 
@@ -125,7 +124,7 @@ pub fn encode_signature<L: HdLevel>(
     a: Scalar,
     b: Scalar,
     c_or_d: Scalar,
-    q: &Degree,
+    q: &L::Degree,
     hint_com_p: u32,
     hint_com_q: u32,
     out: &mut [u8],
@@ -261,3 +260,4 @@ pub const fn public_key_bytes<L: HdLevel>() -> usize {
 }
 
 const _: () = assert!(MAX_SIG_WIRE_BYTES >= sig_wire_bytes::<crate::params::P324_3>());
+const _: () = assert!(MAX_SIG_WIRE_BYTES >= sig_wire_bytes::<crate::params::P500_27>());

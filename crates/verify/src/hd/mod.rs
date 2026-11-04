@@ -59,6 +59,7 @@ pub mod hd_verify;
 pub mod isogeny;
 pub mod kani;
 mod nqr_tables_p324_3;
+mod nqr_tables_p500_27;
 pub mod params;
 pub mod point;
 pub mod primality;
@@ -121,7 +122,7 @@ pub use two_point::{
     gluing_images_paired, null_fixed_by_pi, permute_pi, run_strategy_chain_two_point,
     run_strategy_chain_two_point_checked, PI, PI_FIXED, PI_PAIRS,
 };
-pub use params::{Degree, Scalar};
+pub use params::{DegreeInt, Scalar};
 pub use uint::{Uint, U3, U4};
 pub use wire::{
     challenge_limbs, encode_public_key, encode_signature, hd_verify_bytes, hd_verify_bytes_with,

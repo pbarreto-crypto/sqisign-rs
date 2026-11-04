@@ -27,7 +27,7 @@ use crate::ec::{EcCurve, JacPoint};
 use crate::fp::{Fp2, FpBackend};
 
 use super::params::HdLevel;
-use super::params::{Degree, Scalar};
+use super::params::{DegreeInt, Scalar};
 
 use crate::hd::arith::{hadamard, pointwise_square};
 use crate::hd::canonical::make_canonical;
@@ -39,7 +39,7 @@ use crate::hd::gluing_chain::{
 use crate::hd::hd_verify::HdReject;
 use crate::hd::isogeny::apply_plain_image;
 use crate::hd::kani::{
-    gluing_bc_dim4_f1, gluing_bc_dim4_f2, inverse_mod_pow2, norm_equation_2f_minus_q,
+    gluing_bc_dim4_f1, gluing_bc_dim4_f2, inverse_mod_pow2,
     starting_two_symplectic_matrices,
 };
 use crate::hd::point::ThetaPointDim4;
@@ -51,7 +51,6 @@ use crate::hd::profile::{
 use crate::hd::response::{recover_response_prof, ResponseScalars};
 use crate::hd::strategy::{run_strategy_chain_prof, StrategyChain};
 use crate::hd::structure::ThetaStructureDim4;
-use crate::hd::primality::is_good_degree;
 use crate::hd::two_point::{
     run_strategy_chain_two_point_checked_prof, run_strategy_chain_two_point_prof,
 };
@@ -120,7 +119,7 @@ pub struct HdCodomains<L: FpBackend> {
 /// signature + recovered public-key/commitment curves; no oracle data).
 /// A parsed compact signature with its public key: what [`hd_verify`]
 /// consumes. `chal_limbs` is the recomputed challenge, `λ` bits.
-pub struct HdSignature<'a, L: FpBackend> {
+pub struct HdSignature<'a, L: HdLevel> {
     /// Public-key curve Montgomery `A` (stage 1).
     pub a_pk: Fp2<L>,
     /// Commitment curve Montgomery `A` (stage 1).
@@ -141,7 +140,7 @@ pub struct HdSignature<'a, L: FpBackend> {
     pub resp_c_or_d: Scalar,
     /// Response degree `q` (the full ~136-bit value).
     /// The response degree, `q < 2^e`.
-    pub q: Degree,
+    pub q: L::Degree,
 }
 
 // small helpers (mirroring the validated tests)
@@ -350,7 +349,7 @@ fn build_setup_prof<L: HdLevel, P: Profiler>(
         prof,
     )
     .ok_or(HdReject::ChallengeRecovery)?;
-    let q4 = sig.q.resize();
+    let q4 = sig.q.to_scalar();
     let rsp = recover_response_prof::<L, P>(
         &chal,
         &sig.a_com,
@@ -373,13 +372,13 @@ fn build_setup_prof<L: HdLevel, P: Profiler>(
     // the norm equation.
     // 5b.4: norm equation 2^e - q = a1² + a2² (a1 odd, a2 even); m = v₂(a2).
     let ts = prof.now();
-    if !is_good_degree(L::E_EMBED, &sig.q) {
+    if !sig.q.is_good_degree(L::E_EMBED) {
         return Err(HdReject::DegreeNotGood);
     }
-    let (a1u, a2u) = norm_equation_2f_minus_q(L::E_EMBED, &sig.q).ok_or(HdReject::NormEquation)?;
+    let (a1u, a2u) = sig.q.norm_equation(L::E_EMBED).ok_or(HdReject::NormEquation)?;
     prof.sub_add(11, prof.now() - ts);
-    let a1 = a1u.resize();
-    let a2 = a2u.resize();
+    let a1 = a1u.to_scalar();
+    let a2 = a2u.to_scalar();
     let m = a2.trailing_zeros() as usize;
     // `m = v₂(a2)` must lie in the protocol's small range. Out-of-range values
     // would otherwise drive the dim-4 gluing base change's `i128` products past

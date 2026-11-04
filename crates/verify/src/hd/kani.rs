@@ -40,8 +40,8 @@
 //! therefore validate the completion by the **symplectic property** (it is a
 //! valid completion of the real kernel blocks for all 5 vectors).
 
-use super::params::{Degree, Scalar};
-use super::uint::jacobi_small;
+use super::params::Scalar;
+use super::uint::{jacobi_small, Uint};
 
 // Sum of two squares (Cornacchia), N = 2^f - q = a₁² + a₂², N prime ≡ 1 (mod 4).
 
@@ -51,16 +51,16 @@ use super::uint::jacobi_small;
 /// to `(n − 1)/4`, then the Euclidean descent), `a_1` odd. `None` if `n` is
 /// even, no root is found among the first bases, or the descent fails (`n`
 /// not a prime `≡ 1 mod 4`, or not a sum of two squares).
-pub fn sum_of_two_squares(n: &Degree) -> Option<(Degree, Degree)> {
+pub fn sum_of_two_squares<const N: usize>(n: &Uint<N>) -> Option<(Uint<N>, Uint<N>)> {
     if !n.is_odd() || n.0[0] & 3 != 1 {
         return None;
     }
-    let nm1 = n.wrapping_sub(&Degree::ONE);
+    let nm1 = n.wrapping_sub(&Uint::<N>::ONE);
     let exp = nm1.shr(2); // (n - 1) / 4
                           // The first base with Jacobi symbol -1 (for a prime n the base the old
                           // loop over every base found); one exponentiation, t^2 != -1 rejects.
     let b = (2..1000u64).find(|&b| jacobi_small(b, n) == -1)?;
-    let t = Degree::from_u64(b).pow_mod(&exp, n);
+    let t = Uint::<N>::from_u64(b).pow_mod(&exp, n);
     if t.mul_mod(&t, n) != nm1 {
         return None;
     }
@@ -91,8 +91,8 @@ pub fn sum_of_two_squares(n: &Degree) -> Option<(Degree, Degree)> {
 }
 
 /// `(a_1, a_2)` with `a_1^2 + a_2^2 = 2^e − q`.
-pub fn norm_equation_2f_minus_q(e: u32, q: &Degree) -> Option<(Degree, Degree)> {
-    let n = Degree::pow2(e).wrapping_sub(q);
+pub fn norm_equation_2f_minus_q<const N: usize>(e: u32, q: &Uint<N>) -> Option<(Uint<N>, Uint<N>)> {
+    let n = Uint::<N>::pow2(e).wrapping_sub(q);
     sum_of_two_squares(&n)
 }
 
